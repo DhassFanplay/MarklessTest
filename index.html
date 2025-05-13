@@ -2,9 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>OpenCV + A-Frame - Camera Selection (Improved)</title>
+  <title>AR Cube Placement - Button Start</title>
 
-  <!-- Load A-Frame FIRST -->
+  <!-- Load A-Frame -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
 
   <!-- Load OpenCV.js -->
@@ -16,6 +16,7 @@
       padding: 0;
       overflow: hidden;
       background: black;
+      font-family: sans-serif;
     }
 
     #video, #canvas {
@@ -28,24 +29,19 @@
       z-index: 0;
     }
 
-    #loading {
+    #startButton {
       position: absolute;
-      top: 40%;
-      width: 100%;
-      text-align: center;
-      color: white;
-      font-size: 20px;
-      z-index: 10;
-    }
-
-    #cameraSelect {
-      position: absolute;
-      bottom: 20px;
+      top: 50%;
       left: 50%;
-      transform: translateX(-50%);
-      padding: 10px 20px;
-      font-size: 16px;
+      transform: translate(-50%, -50%);
+      padding: 20px 40px;
+      font-size: 20px;
+      border: none;
+      border-radius: 10px;
+      background-color: rgba(0, 0, 0, 0.7);
+      color: white;
       z-index: 100;
+      cursor: pointer;
     }
 
     a-scene {
@@ -75,12 +71,9 @@
 
 <body>
 
-<!-- Camera Selector Dropdown -->
-<select id="cameraSelect" onchange="switchCamera(this.value)">
-  <option value="">Select Camera</option>
-</select>
+<!-- Start Button -->
+<button id="startButton">Start Camera</button>
 
-<div id="loading">Waiting for camera...</div>
 <video id="video" autoplay playsinline></video>
 <canvas id="canvas"></canvas>
 <div id="reticle"></div>
@@ -106,112 +99,35 @@
 </a-scene>
 
 <script>
-  const loading = document.getElementById('loading');
+  const startButton = document.getElementById('startButton');
   const video = document.getElementById('video');
   const canvas = document.getElementById('canvas');
   const ctx = canvas.getContext('2d');
   const cube = document.getElementById('placedCube');
-  const cameraSelect = document.getElementById('cameraSelect');
 
   let isPlaced = false;
-  let currentStream = null;
 
   // Wait for OpenCV to load
   const checkCv = setInterval(() => {
     if (typeof cv !== 'undefined') {
       clearInterval(checkCv);
-      getCameras();
     }
   }, 100);
 
-  // Get list of available cameras
-  async function getCameras() {
-    try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoDevices = devices.filter(device => device.kind === 'videoinput');
-
-      if (videoDevices.length > 0) {
-        videoDevices.forEach((device, index) => {
-          const option = document.createElement('option');
-          option.value = device.deviceId;
-          option.text = `Camera ${index + 1} (${device.label || 'No label'})`;
-          cameraSelect.appendChild(option);
-        });
-
-        // Try default camera
-        switchCamera(videoDevices[0].deviceId);
-      } else {
-        loading.innerText = "No cameras found.";
-      }
-    } catch (err) {
-      console.error("Error enumerating devices:", err);
-      alert("Could not retrieve camera list.");
-    }
-  }
-
-  // Switch to selected camera
-  async function switchCamera(cameraId) {
-    // Stop current stream if any
-    if (currentStream) {
-      currentStream.getTracks().forEach(track => track.stop());
-      currentStream = null;
-    }
-
-    loading.innerText = "Starting camera...";
-
-    const constraints = {
-      video: {}
-    };
-
-    // Try to use deviceId if available, otherwise fall back
-    if (cameraId && cameraId.trim() !== "") {
-      constraints.video.deviceId = { exact: cameraId };
-    }
-
-    // Use ideal values only, avoid mandatory which may fail
-    constraints.video.width = { ideal: 1280 };
-    constraints.video.height = { ideal: 720 };
+  // On button click: start camera
+  startButton.addEventListener('click', async () => {
+    startButton.style.display = 'none';
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
       video.srcObject = stream;
-      currentStream = stream;
-
-      // Ensure video starts playing
-      video.onloadedmetadata = () => {
-        video.play().catch(err => {
-          console.error("Video play error:", err);
-          alert("Could not start video playback.");
-        });
-      };
-
-      loading.style.display = 'none';
+      video.play();
       requestAnimationFrame(processFrame);
     } catch (err) {
-      console.error("Error starting camera:", err);
-      alert("Could not start selected camera. Trying default...");
-      try {
-        // Fallback: try without deviceId
-        const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true });
-        video.srcObject = fallbackStream;
-        currentStream = fallbackStream;
-
-        video.onloadedmetadata = () => {
-          video.play().catch(err => {
-            console.error("Fallback video play error:", err);
-            alert("Could not start fallback video playback.");
-          });
-        };
-
-        loading.style.display = 'none';
-        requestAnimationFrame(processFrame);
-      } catch (fallbackErr) {
-        loading.innerText = "Failed to access camera.";
-        alert("Could not access any camera.");
-        console.error("Fallback camera error:", fallbackErr);
-      }
+      alert("Camera access denied or not supported.");
+      console.error("Webcam error:", err);
     }
-  }
+  });
 
   function processFrame() {
     if (video.videoWidth === 0 || video.videoHeight === 0) {
@@ -219,9 +135,11 @@
       return;
     }
 
+    // Resize canvas to match video size
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
 
+    // Draw current video frame to canvas
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     try {
@@ -229,40 +147,59 @@
       let gray = new cv.Mat();
       let edges = new cv.Mat();
 
+      // Convert to grayscale
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+      // Edge detection
       cv.Canny(gray, edges, 50, 150);
 
+      // Find contours
       let contours = new cv.MatVector();
       let hierarchy = new cv.Mat();
       cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
+      // Clear canvas and redraw original image
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
       const centerX = canvas.width / 2;
       const centerY = canvas.height / 2;
 
+      // Loop through contours
       for (let i = 0; i < contours.size(); ++i) {
         let cnt = contours.get(i);
-        if (cv.contourArea(cnt) > 10000) {
+        if (cv.contourArea(cnt) > 10000) { // Filter large areas
+
+          // Get bounding box
           let rect = cv.boundingRect(cnt);
 
+          // Check if center point is inside the contour's rectangle
           if (
             centerX >= rect.x &&
             centerX <= rect.x + rect.width &&
             centerY >= rect.y &&
             centerY <= rect.y + rect.height
           ) {
+
+            // Normalize screen coordinates to -1 to 1 range
             let xNorm = (centerX / canvas.width) * 2 - 1;
             let yNorm = (centerY / canvas.height) * 2 - 1;
+
+            // Estimate depth based on Y position
             let zDepth = -1 - (yNorm * 0.5);
 
+            // Place cube once
             if (!isPlaced) {
-              cube.setAttribute('position', { x: xNorm, y: 0, z: zDepth });
+              cube.setAttribute('position', {
+                x: xNorm,
+                y: 0,
+                z: zDepth
+              });
               cube.setAttribute('visible', true);
               isPlaced = true;
             }
 
+            // Highlight contour with green stroke
             ctx.strokeStyle = "lime";
             ctx.lineWidth = 3;
             ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
@@ -270,6 +207,7 @@
         }
       }
 
+      // Cleanup
       src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
     } catch (err) {
       console.error("OpenCV Error:", err);
