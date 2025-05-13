@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Step-by-Step: Select Camera → Start → Place Cube</title>
+  <title>AR Step-by-Step: Multiple Cube Placement</title>
 
   <!-- Load A-Frame -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
@@ -173,12 +173,10 @@
       video: {}
     };
 
-    // Try using deviceId if available
     if (cameraId && cameraId.trim() !== "") {
       constraints.video.deviceId = { exact: cameraId };
     }
 
-    // Fallback-friendly resolution
     constraints.video.width = { ideal: 1280 };
     constraints.video.height = { ideal: 720 };
 
@@ -221,7 +219,7 @@
     }
   }
 
-  // Start camera on user click
+  // Start camera on click
   startButton.addEventListener('click', () => {
     const selectedCamera = cameraSelect.value;
     if (!selectedCamera) {
@@ -231,21 +229,41 @@
     switchCamera(selectedCamera);
   });
 
-  // Place cube when button clicked
-  placeCubeButton.addEventListener('click', () => {
-    if (isPlaced) return;
+  // Handle tap/click to place cube
+  document.body.addEventListener('click', (e) => {
+    if (!placeCubeButton.style.display || placeCubeButton.style.display === 'none') return;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
 
     const centerX = canvas.width / 2;
     const centerY = canvas.height / 2;
 
-    const xNorm = (centerX / canvas.width) * 2 - 1;
-    const yNorm = (centerY / canvas.height) * 2 - 1;
+    const dx = x - rect.left;
+    const dy = y - rect.top;
+
+    detectAndPlaceCube(dx, dy);
+  });
+
+  function detectAndPlaceCube(touchX, touchY) {
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+
+    const xNorm = (touchX / canvas.width) * 2 - 1;
+    const yNorm = (touchY / canvas.height) * 2 - 1;
     const zDepth = -1 - (yNorm * 0.5);
+
+    // Hide existing cube if already placed
+    if (isPlaced) {
+      cube.setAttribute('visible', false);
+      isPlaced = false;
+    }
 
     cube.setAttribute('position', { x: xNorm, y: 0, z: zDepth });
     cube.setAttribute('visible', true);
     isPlaced = true;
-  });
+  }
 
   function processFrame() {
     if (video.videoWidth === 0 || video.videoHeight === 0) {
@@ -280,17 +298,9 @@
         let cnt = contours.get(i);
         if (cv.contourArea(cnt) > 10000) {
           let rect = cv.boundingRect(cnt);
-
-          if (
-            centerX >= rect.x &&
-            centerX <= rect.x + rect.width &&
-            centerY >= rect.y &&
-            centerY <= rect.y + rect.height
-          ) {
-            ctx.strokeStyle = "lime";
-            ctx.lineWidth = 3;
-            ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
-          }
+          ctx.strokeStyle = "lime";
+          ctx.lineWidth = 3;
+          ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
         }
       }
 
