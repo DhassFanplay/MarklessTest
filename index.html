@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Step-by-Step: Multiple Cube Placement</title>
+  <title>AR Floor Detection - Based on Python Logic</title>
 
   <!-- Load A-Frame -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
@@ -237,13 +237,7 @@
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    const centerX = canvas.width / 2;
-    const centerY = canvas.height / 2;
-
-    const dx = x - rect.left;
-    const dy = y - rect.top;
-
-    detectAndPlaceCube(dx, dy);
+    detectAndPlaceCube(x, y);
   });
 
   function detectAndPlaceCube(touchX, touchY) {
@@ -254,12 +248,7 @@
     const yNorm = (touchY / canvas.height) * 2 - 1;
     const zDepth = -1 - (yNorm * 0.5);
 
-    // Hide existing cube if already placed
-    if (isPlaced) {
-      cube.setAttribute('visible', false);
-      isPlaced = false;
-    }
-
+    // Reuse cube placement
     cube.setAttribute('position', { x: xNorm, y: 0, z: zDepth });
     cube.setAttribute('visible', true);
     isPlaced = true;
@@ -281,35 +270,118 @@
       let gray = new cv.Mat();
       let edges = new cv.Mat();
 
+      // Convert to grayscale
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-      cv.Canny(gray, edges, 50, 150);
 
-      let contours = new cv.MatVector();
-      let hierarchy = new cv.Mat();
-      cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+      // Canny edge detection
+      cv.Canny(gray, edges, 50, 150, 3, true); // apertureSize=3, L2gradient=true
 
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      // Morphological operations
+      let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+      cv.dilate(edges, edges, kernel, new cv.Point(-1, -1), 5);
+      cv.erode(edges, edges, kernel, new cv.Point(-1, -1), 3);
 
-      const centerX = canvas.width / 2;
-      const centerY = canvas.height / 2;
+      // Hough Line Detection
+      let lines = new cv.Mat();
+      cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 20, 20, 10);
 
-      for (let i = 0; i < contours.size(); ++i) {
-        let cnt = contours.get(i);
-        if (cv.contourArea(cnt) > 10000) {
-          let rect = cv.boundingRect(cnt);
-          ctx.strokeStyle = "lime";
-          ctx.lineWidth = 3;
-          ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+      let leftLines = [];
+      let rightLines = [];
+
+      for (let i = 0; i < lines.rows; ++i) {
+        let x1 = lines.data32S[i * 4];
+        let y1 = lines.data32S[i * 4 + 1];
+        let x2 = lines.data32S[i * 4 + 2];
+        let y2 = lines.data32S[i * 4 + 3];
+
+        let dx = x2 - x1;
+        let dy = y2 - y1;
+        let length = Math.sqrt(dx * dx + dy * dy);
+        if (length < 20) continue;
+
+        let slope = (y2 - y1) / (x2 - x1 || 0.0001);
+        slope = parseFloat(slope.toFixed(2));
+
+        if (Math.abs(slope) < 0.1 || Math.abs(slope) > 10) continue;
+
+        if (slope > 0) {
+          leftLines.push({ x1, y1, x2, y2 });
+        } else {
+          rightLines.push({ x1, y1, x2, y2 });
         }
       }
 
-      src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+      // Find best lines
+      let bestLeft = getBestLine(leftLines);
+      let bestRight = getBestLine(rightLines);
+
+      // Optional: Draw detected floor lines
+      drawFloorLines(bestLeft, bestRight);
+
+      // Estimate floor center
+      estimateAndPlaceCube(bestLeft, bestRight);
+
+      src.delete(); gray.delete(); edges.delete(); lines.delete();
     } catch (err) {
       console.error("OpenCV Error:", err);
     }
 
     requestAnimationFrame(processFrame);
+  }
+
+  function getBestLine(lines) {
+    if (lines.length === 0) return null;
+    return lines.reduce((best, curr) => {
+      let len1 = Math.hypot(best.x2 - best.x1, best.y2 - best.y1);
+      let len2 = Math.hypot(curr.x2 - curr.x1, curr.y2 - curr.y1);
+      return len1 > len2 ? best : curr;
+    });
+  }
+
+  function drawFloorLines(bestLeft, bestRight) {
+    ctx.strokeStyle = "red";
+    ctx.lineWidth = 2;
+
+    if (bestLeft) {
+      ctx.beginPath();
+      ctx.moveTo(bestLeft.x1, bestLeft.y1);
+      ctx.lineTo(bestLeft.x2, bestLeft.y2);
+      ctx.stroke();
+    }
+
+    if (bestRight) {
+      ctx.beginPath();
+      ctx.moveTo(bestRight.x1, bestRight.y1);
+      ctx.lineTo(bestRight.x2, bestRight.y2);
+      ctx.stroke();
+    }
+  }
+
+  function estimateAndPlaceCube(bestLeft, bestRight) {
+    if (!bestLeft || !bestRight) return;
+
+    let x_bottom_left = Math.min(bestLeft.x1, bestLeft.x2);
+    let y_bottom_left = Math.max(bestLeft.y1, bestLeft.y2);
+    let x_top_left = Math.max(bestLeft.x1, bestLeft.x2);
+    let y_top_left = Math.min(bestLeft.y1, bestLeft.y2);
+
+    let x_bottom_right = Math.max(bestRight.x1, bestRight.x2);
+    let y_bottom_right = Math.max(bestRight.y1, bestRight.y2);
+    let x_top_right = Math.min(bestRight.x1, bestRight.x2);
+    let y_top_right = Math.min(bestRight.y1, bestRight.y2);
+
+    let x_center = (x_bottom_left + x_bottom_right) / 2;
+    let y_center = (y_bottom_left + y_bottom_right) / 2;
+
+    // Draw reticle at floor center
+    ctx.fillStyle = "lime";
+    ctx.fillRect(x_center - 5, y_center - 5, 10, 10);
+
+    // Place cube only once
+    if (!isPlaced) {
+      detectAndPlaceCube(x_center, y_center);
+      isPlaced = true;
+    }
   }
 </script>
 
