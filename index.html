@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Floor Detection - Fix & Place Cube</title>
+  <title>AR Floor Detection - Camera Fixed</title>
 
   <!-- Load A-Frame -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
@@ -103,7 +103,6 @@
 </div>
 
 <div id="statusText">Looking for floor...</div>
-
 <video id="video" autoplay playsinline></video>
 <canvas id="canvas"></canvas>
 <div id="reticle"></div>
@@ -129,7 +128,6 @@
 </a-scene>
 
 <script>
-  const cameraEl = document.getElementById('camera');
   const video = document.getElementById('video');
   const canvas = document.getElementById('canvas');
   const ctx = canvas.getContext('2d');
@@ -150,7 +148,12 @@
     navigator.mediaDevices.getUserMedia({ video: true })
       .then(stream => {
         video.srcObject = stream;
-        video.play();
+        video.onloadedmetadata = () => {
+          video.play().catch(err => {
+            console.error("Video play error:", err);
+            alert("Could not start video.");
+          });
+        };
         requestAnimationFrame(processFrame);
       })
       .catch(err => {
@@ -167,6 +170,7 @@
 
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
+
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     if (!isPlaced) {
@@ -188,7 +192,7 @@
 
         // Hough Line Detection
         let lines = new cv.Mat();
-        cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 20, 20, 10); // Corrected
+        cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 20, 20, 10);
 
         let leftLines = [];
         let rightLines = [];
@@ -205,11 +209,9 @@
           if (length < 20) continue;
 
           let slope = (dy / (dx || 0.0001)).toFixed(2);
-          slope = parseFloat(slope);
-
           if (Math.abs(slope) < 0.1 || Math.abs(slope) > 10) continue;
 
-          if (slope > 0) {
+          if (parseFloat(slope) > 0) {
             leftLines.push({ x1, y1, x2, y2 });
           } else {
             rightLines.push({ x1, y1, x2, y2 });
@@ -220,7 +222,7 @@
         let bestLeft = getBestLine(leftLines);
         let bestRight = getBestLine(rightLines);
 
-        // Estimate floor center point
+        // Estimate floor base point
         const centerX = canvas.width / 2;
         const centerY = canvas.height / 2;
 
@@ -232,22 +234,27 @@
           let x_bottom_right = Math.max(bestRight.x1, bestRight.x2);
           let y_bottom_right = Math.max(bestRight.y1, bestRight.y2);
 
-          // Compute distance from screen center to floor line
-          let distToLeftEdge = Math.abs(
+          // Check if center point is between floor lines
+          let distanceToLeftEdge = Math.abs(
             (y_bottom_left - bestLeft.y2) * centerX -
             (x_bottom_left - bestLeft.x2) * centerY +
             x_bottom_left * bestLeft.y2 -
             y_bottom_left * bestLeft.x2
           ) / Math.hypot(y_bottom_left - bestLeft.y2, x_bottom_left - bestLeft.x2);
 
-          let distToRightEdge = Math.abs(
+          let distanceToRightEdge = Math.abs(
             (y_bottom_right - bestRight.y2) * centerX -
             (x_bottom_right - bestRight.x2) * centerY +
             x_bottom_right * bestRight.y2 -
             y_bottom_right * bestRight.x2
           ) / Math.hypot(y_bottom_right - bestRight.y2, x_bottom_right - bestRight.x2);
 
-          surfaceUnderCenter = distToLeftEdge < 20 && distToRightEdge < 20;
+          if (distanceToLeftEdge < 20 && distanceToRightEdge < 20) {
+            surfaceUnderCenter = true;
+          }
+
+          // Save globally
+          window.floorBottomY = (y_bottom_left + y_bottom_right) / 2;
         }
 
         // Update reticle color
@@ -264,25 +271,28 @@
     requestAnimationFrame(processFrame);
   }
 
-  // Button click: Place cube once
+  // Place cube once when user clicks
   document.getElementById('placeCubeButton').addEventListener('click', () => {
     if (isPlaced) return;
 
-    const centerX = canvas.width / 2;
-    const centerY = canvas.height / 2;
+    const cameraEl = document.querySelector('[camera]');
+    const cameraPos = cameraEl.object3D.position.clone();
+    const cameraDir = new THREE.Vector3(0, 0, -1); // Forward direction
+    cameraDir.applyQuaternion(cameraEl.object3d.quaternion); // Rotate with camera
 
-    const floorX = window.floorBottomX;
-    const floorY = window.floorBottomY;
-
-    if (!floorX || !floorY) {
-      alert("No floor detected under center. Try pointing at flat surface.");
+    // Use detected Y from floor
+    let floorBaseY = window.floorBottomY;
+    if (!floorBaseY) {
+      alert("No floor detected under center. Try again.");
       return;
     }
 
-    // Normalize to A-Frame coordinate system (-1 to 1)
-    let xNorm = (centerX / canvas.width) * 2 - 1;
-    let yNorm = (floorY / canvas.height) * 2 - 1;
-    let zDepth = -1.5; // Fixed Z in front of camera
+    // Normalize to A-Frame coordinates
+    let yNorm = (floorBaseY / canvas.height) * 2 - 1;
+    let xNorm = (canvas.width / 2 / canvas.width) * 2 - 1;
+
+    // Set fixed Z in front of camera
+    let zDepth = -1.5;
 
     cube.setAttribute('position', {
       x: xNorm,
@@ -294,7 +304,7 @@
     isPlaced = true;
   });
 
-  // Rescan button: Hide cube and restart detection
+  // Rescan floor detection
   document.getElementById('rescanButton').addEventListener('click', () => {
     cube.setAttribute('visible', false);
     isPlaced = false;
