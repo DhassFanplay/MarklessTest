@@ -1,74 +1,191 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>OpenCV Plane Detection</title>
-  <style>
-    video, canvas {
-      width: 100vw;
-      height: 100vh;
-      object-fit: cover;
-    }
-  </style>
+    <meta charset="UTF-8" />
+    <title>OpenCV + A-Frame AR Placement</title>
+
+    <!-- Load A-Frame FIRST -->
+    <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
+
+    <!-- Load OpenCV.js -->
+    <script async src="https://docs.opencv.org/4.5.0/opencv.js "></script>
+
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: black;
+        }
+
+        #video, #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            z-index: 0;
+        }
+
+        #loading {
+            position: absolute;
+            top: 40%;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-size: 20px;
+            z-index: 10;
+        }
+
+        a-scene {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 20;
+        }
+    </style>
 </head>
+
 <body>
 
-<video id="video" autoplay playsinline></video>
-<canvas id="canvas"></canvas>
+    <div id="loading">Waiting for camera...</div>
+    <video id="video" autoplay playsinline></video>
+    <canvas id="canvas"></canvas>
 
-<script async src="https://docs.opencv.org/4.5.0/opencv.js "></script>
-<script>
-  const video = document.getElementById('video');
-  const canvas = document.getElementById('canvas');
-  const ctx = canvas.getContext('2d');
+    <!-- A-Frame Scene -->
+    <a-scene embedded>
+        <!-- Lighting -->
+        <a-entity light="type: ambient; intensity: 0.5;"></a-entity>
+        <a-entity light="type: directional; color: #fff; intensity: 0.7;" position="-1 1 0"></a-entity>
 
-  // Get video stream
-  navigator.mediaDevices.getUserMedia({ video: true })
-    .then(stream => {
-      video.srcObject = stream;
-      requestAnimationFrame(processFrame);
-    });
+        <!-- Cube (hidden initially) -->
+        <a-box id="placedCube"
+               color="red"
+               depth="0.5"
+               height="0.5"
+               width="0.5"
+               visible="false"
+               position="0 0 0">
+        </a-box>
 
-  function processFrame() {
-    // Resize canvas to match video size
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+        <!-- Camera -->
+        <a-entity camera look-controls></a-entity>
+    </a-scene>
 
-    // Draw current video frame to canvas
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    <script>
+        const loading = document.getElementById('loading');
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const cube = document.getElementById('placedCube');
 
-    // Get image data
-    let src = cv.imread(canvas);
-    let gray = new cv.Mat();
-    let edges = new cv.Mat();
+        let isPlaced = false;
 
-    // Convert to grayscale
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+        // Wait for OpenCV to load
+        const checkCv = setInterval(() => {
+            if (typeof cv !== 'undefined') {
+                clearInterval(checkCv);
+                initCamera();
+            }
+        }, 100);
 
-    // Edge detection
-    cv.Canny(gray, edges, 50, 150);
+        function initCamera() {
+            navigator.mediaDevices.getUserMedia({ video: true })
+                .then(stream => {
+                    video.srcObject = stream;
+                    video.play();
+                    loading.innerText = "Processing video...";
+                    requestAnimationFrame(processFrame);
+                })
+                .catch(err => {
+                    loading.innerText = "Camera access denied or not supported.";
+                    console.error("Webcam error:", err);
+                });
+        }
 
-    // Find contours
-    let contours = new cv.MatVector();
-    let hierarchy = new cv.Mat();
-    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+        function processFrame() {
+            if (video.videoWidth === 0 || video.videoHeight === 0) {
+                requestAnimationFrame(processFrame);
+                return;
+            }
 
-    // Draw contours (basic plane-like detection)
-    for (let i = 0; i < contours.size(); ++i) {
-      let cnt = contours.get(i);
-      if (cv.contourArea(cnt) > 1000) {
-        cv.drawContours(src, contours, i, [0, 255, 0, 255], 2);
-      }
-    }
+            // Resize canvas to match video size
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
 
-    // Show result
-    cv.imshow('canvas', src);
+            // Draw current video frame to canvas
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Cleanup
-    src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+            try {
+                let src = cv.imread(canvas);
+                let gray = new cv.Mat();
+                let edges = new cv.Mat();
 
-    requestAnimationFrame(processFrame);
-  }
-</script>
+                // Convert to grayscale
+                cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+                // Edge detection
+                cv.Canny(gray, edges, 50, 150);
+
+                // Find contours
+                let contours = new cv.MatVector();
+                let hierarchy = new cv.Mat();
+                cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+                // Clear canvas and redraw original image
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                // Loop through contours
+                for (let i = 0; i < contours.size(); ++i) {
+                    let cnt = contours.get(i);
+                    if (cv.contourArea(cnt) > 10000) { // Filter large areas
+
+                        // Get bounding box
+                        let rect = cv.boundingRect(cnt);
+                        let centerX = rect.x + rect.width / 2;
+                        let centerY = rect.y + rect.height / 2;
+
+                        // Normalize screen coordinates to -1 to 1 range
+                        let xNorm = (centerX / canvas.width) * 2 - 1;
+                        let yNorm = (centerY / canvas.height) * 2 - 1;
+
+                        // Estimate depth based on Y position
+                        let zDepth = -1 - (yNorm * 0.5);
+
+                        // Place cube on first tap
+                        if (!isPlaced) {
+                            document.body.addEventListener('click', () => {
+                                cube.setAttribute('position', {
+                                    x: xNorm,
+                                    y: 0,
+                                    z: zDepth
+                                });
+                                cube.setAttribute('visible', true);
+                                isPlaced = true;
+                            });
+                        }
+
+                        // Draw green rectangle
+                        ctx.strokeStyle = "lime";
+                        ctx.lineWidth = 3;
+                        ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+                    }
+                }
+
+                // Cleanup
+                src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+            } catch (err) {
+                console.error("OpenCV Error:", err);
+            }
+
+            requestAnimationFrame(processFrame);
+        }
+    </script>
+
 </body>
 </html>
