@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>AR.js Markerless Cube Placement</title>
+    <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
+    <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js "></script>
+    <style>
+        body, html {
+            margin: 0;
+            overflow: hidden;
+        }
+
+        #placeButton {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 15px 30px;
+            font-size: 16px;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            display: none;
+        }
+    </style>
+</head>
+
+<body style="margin:0;overflow:hidden">
+
+    <!-- Place Button -->
+    <button id="placeButton">Place Cube</button>
+
+    <!-- A-Frame Scene -->
+    <a-scene embedded
+             arjs='trackingMethod: best;'
+             vr-mode-ui="enabled: false"
+             device-orientation-permission-ui="enabled: false">
+        <!-- Lighting -->
+        <a-entity light="type: ambient; intensity: 0.5;"></a-entity>
+        <a-entity light="type: directional; color: #fff; intensity: 0.7;" position="-1 1 0"></a-entity>
+
+        <!-- Hidden cube to be placed -->
+        <a-box id="arCube"
+               color="red"
+               depth="0.5"
+               height="0.5"
+               width="0.5"
+               visible="false"></a-box>
+
+        <!-- Camera -->
+        <a-entity camera></a-entity>
+    </a-scene>
+
+    <!-- Custom JS -->
+    <script>
+        window.addEventListener('load', () => {
+            const scene = document.querySelector('a-scene');
+            const cube = document.getElementById('arCube');
+            const placeButton = document.getElementById('placeButton');
+
+            // Show button after scene loads
+            setTimeout(() => {
+                placeButton.style.display = 'block';
+            }, 3000); // Delay to allow AR tracking to initialize
+
+            // Place cube when button is clicked
+            placeButton.addEventListener('click', () => {
+                if (!window.raycaster) {
+                    alert("Please point the camera at a surface first.");
+                    return;
+                }
+
+                // Cast ray from center of screen
+                const raycaster = new THREE.Raycaster();
+                const camera = scene.camera.el.object3D;
+                raycaster.setFromCamera({ x: 0, y: 0 }, camera);
+
+                const intersects = raycaster.intersectObjects(scene.object3D.children, true);
+                if (intersects.length > 0) {
+                    const hitPoint = intersects[0].point;
+
+                    cube.setAttribute('position', {
+                        x: hitPoint.x,
+                        y: hitPoint.y,
+                        z: hitPoint.z
+                    });
+
+                    cube.setAttribute('visible', true);
+                    placeButton.style.display = 'none'; // Hide button after placing
+                } else {
+                    alert("No surface detected. Point at a flat area and try again.");
+                }
+            });
+        });
+    </script>
+</body>
+</html>
