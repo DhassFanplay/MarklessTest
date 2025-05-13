@@ -127,45 +127,74 @@
 
   // Get list of available cameras
   async function getCameras() {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const videoDevices = devices.filter(device => device.kind === 'videoinput');
-    
-    if (videoDevices.length > 0) {
-      videoDevices.forEach((device, index) => {
-        const option = document.createElement('option');
-        option.value = device.deviceId;
-        option.text = `Camera ${index + 1} (${device.label || 'No label'})`;
-        cameraSelect.appendChild(option);
-      });
-      switchCamera(videoDevices[0].deviceId); // Default to first camera
-    } else {
-      loading.innerText = "No cameras found.";
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter(device => device.kind === 'videoinput');
+
+      if (videoDevices.length > 0) {
+        videoDevices.forEach((device, index) => {
+          const option = document.createElement('option');
+          option.value = device.deviceId;
+          option.text = `Camera ${index + 1} (${device.label || 'No label'})`;
+          cameraSelect.appendChild(option);
+        });
+
+        // Try default camera
+        switchCamera(videoDevices[0].deviceId);
+      } else {
+        loading.innerText = "No cameras found.";
+      }
+    } catch (err) {
+      console.error("Error enumerating devices:", err);
+      alert("Could not retrieve camera list.");
     }
   }
 
   // Switch to selected camera
   async function switchCamera(cameraId) {
+    // Stop current stream if any
     if (currentStream) {
       currentStream.getTracks().forEach(track => track.stop());
+      currentStream = null;
     }
 
+    loading.innerText = "Starting camera...";
+
     const constraints = {
-      video: {
-        deviceId: cameraId ? { exact: cameraId } : undefined,
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
-      }
+      video: {}
     };
+
+    // Try to use deviceId if available, otherwise fall back
+    if (cameraId && cameraId.trim() !== "") {
+      constraints.video.deviceId = { exact: cameraId };
+    }
+
+    constraints.video.width = { ideal: 1280 };
+    constraints.video.height = { ideal: 720 };
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       video.srcObject = stream;
       currentStream = stream;
       video.play();
+      loading.style.display = 'none';
       requestAnimationFrame(processFrame);
     } catch (err) {
-      console.error("Error switching camera:", err);
-      alert("Could not access selected camera.");
+      console.error("Error starting camera:", err);
+      alert("Could not start selected camera. Trying default...");
+      try {
+        // Fallback: try without deviceId
+        const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        video.srcObject = fallbackStream;
+        currentStream = fallbackStream;
+        video.play();
+        loading.style.display = 'none';
+        requestAnimationFrame(processFrame);
+      } catch (fallbackErr) {
+        loading.innerText = "Failed to access camera.";
+        alert("Could not access any camera.");
+        console.error("Fallback camera error:", fallbackErr);
+      }
     }
   }
 
