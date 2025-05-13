@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Floor Detection - Visual Overlay</title>
+  <title>AR Floor Detection - Fixed Camera Flow</title>
 
   <!-- Load A-Frame -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
@@ -19,7 +19,7 @@
       font-family: sans-serif;
     }
 
-    #video, #canvas {
+    #video, #canvas, #debugCanvas {
       position: absolute;
       top: 0;
       left: 0;
@@ -27,7 +27,10 @@
       height: 100%;
       object-fit: cover;
       z-index: 0;
+      display: none; /* Hide until started */
     }
+
+    #video { display: block; }
 
     .overlay {
       position: absolute;
@@ -52,17 +55,6 @@
 
     #rescanButton, #placeCubeButton {
       display: none;
-    }
-
-    #debugCanvas {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      pointer-events: none;
-      z-index: 10;
-      mix-blend-mode: multiply; /* Makes overlapping colors darker */
     }
 
     a-scene {
@@ -108,7 +100,7 @@
   <select id="cameraSelect">
     <option value="">Select Camera</option>
   </select>
-  <button id="startButton">Start Camera</button>
+  <button id="startButton" style="display: none;">Start Camera</button>
   <button id="rescanButton">Rescan Floor</button>
   <button id="placeCubeButton">Place Cube</button>
 </div>
@@ -141,13 +133,16 @@
 </a-scene>
 
 <script>
+  const cameraSelect = document.getElementById('cameraSelect');
+  const startButton = document.getElementById('startButton');
+  const rescanButton = document.getElementById('rescanButton');
+  const placeCubeButton = document.getElementById('placeCubeButton');
   const video = document.getElementById('video');
   const canvas = document.getElementById('canvas');
-  const ctx = canvas.getContext('2d');
   const debugCanvas = document.getElementById('debugCanvas');
   const debugCtx = debugCanvas.getContext('2d');
 
-  const cameraEl = document.getElementById('camera');
+  const ctx = canvas.getContext('2d');
   const cube = document.getElementById('placedCube');
 
   let isPlaced = false;
@@ -156,39 +151,173 @@
   const checkCv = setInterval(() => {
     if (typeof cv !== 'undefined') {
       clearInterval(checkCv);
-      initCameras();
+      getCameras();
     }
   }, 100);
 
-  function initCameras() {
-    navigator.mediaDevices.getUserMedia({ video: true })
-      .then(stream => {
-        video.srcObject = stream;
-        video.play();
-        requestAnimationFrame(processFrame);
-      })
-      .catch(err => {
-        alert("Could not access camera.");
-        console.error("Camera error:", err);
-      });
+  // Get list of available cameras
+  async function getCameras() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter(device => device.kind === 'videoinput');
+
+      if (videoDevices.length > 0) {
+        cameraSelect.innerHTML = '<option value="">Select Camera</option>';
+
+        videoDevices.forEach((device, index) => {
+          const option = document.createElement('option');
+          option.value = device.deviceId || '';
+          option.text = `Camera ${index + 1} (${device.label || 'No label'})`;
+          cameraSelect.appendChild(option);
+        });
+
+        cameraSelect.style.display = 'block';
+        cameraSelect.addEventListener('change', () => {
+          if (cameraSelect.value) {
+            startButton.style.display = 'block';
+          } else {
+            startButton.style.display = 'none';
+          }
+        });
+      } else {
+        alert("No cameras found.");
+      }
+    } catch (err) {
+      console.error("Error enumerating devices:", err);
+      alert("Could not retrieve camera list.");
+    }
   }
 
+  // Start camera manually
+  startButton.addEventListener('click', () => {
+    const selectedCamera = cameraSelect.value;
+    if (!selectedCamera) {
+      alert("Please select a valid camera.");
+      return;
+    }
+
+    const constraints = {
+      video: {
+        deviceId: { exact: selectedCamera }
+      },
+      audio: false
+    };
+
+    navigator.mediaDevices.getUserMedia(constraints)
+      .then(stream => {
+        video.srcObject = stream;
+        video.onloadedmetadata = () => {
+          video.play().catch(err => {
+            console.error("Video play error:", err);
+            alert("Could not play video.");
+          });
+        };
+        startButton.style.display = 'none';
+        rescanButton.style.display = 'block';
+        placeCubeButton.style.display = 'block';
+        requestAnimationFrame(processFrame);
+      })
+      .catch(async err => {
+        console.error("Camera access failed:", err);
+        alert("Failed to open selected camera. Trying default...");
+        try {
+          const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true });
+          video.srcObject = fallbackStream;
+          video.onloadedmetadata = () => video.play();
+          startButton.style.display = 'none';
+          rescanButton.style.display = 'block';
+          placeCubeButton.style.display = 'block';
+          requestAnimationFrame(processFrame);
+        } catch (fallbackErr) {
+          alert("Could not access any camera.");
+          console.error("Fallback camera error:", fallbackErr);
+        }
+      });
+  });
+
+  // Reset cube placement and restart detection
+  rescanButton.addEventListener('click', () => {
+    cube.setAttribute('visible', false);
+    isPlaced = false;
+    statusText.textContent = "Looking for floor...";
+    statusText.style.display = 'block';
+    setTimeout(() => statusText.style.display = 'none', 2000);
+  });
+
+  // Place cube based on floor detection
+  placeCubeButton.addEventListener('click', () => {
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+
+    let src = cv.imread(canvas);
+    let gray = new cv.Mat();
+    let edges = new cv.Mat();
+
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.Canny(gray, edges, 50, 150);
+
+    let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+    cv.dilate(edges, edges, kernel, new cv.Point(-1, -1), 5);
+    cv.erode(edges, edges, kernel, new cv.Point(-1, -1), 3);
+
+    // Find contours
+    let contours = new cv.MatVector();
+    let hierarchy = new cv.Mat();
+    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+    let surfaceUnderCenter = false;
+
+    for (let i = 0; i < contours.size(); ++i) {
+      let cnt = contours.get(i);
+      let rect = cv.boundingRect(cnt);
+
+      if (
+        centerX >= rect.x &&
+        centerX <= rect.x + rect.width &&
+        centerY >= rect.y &&
+        centerY <= rect.y + rect.height
+      ) {
+        surfaceUnderCenter = true;
+        break;
+      }
+    }
+
+    // Cleanup
+    src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+
+    if (surfaceUnderCenter && !isPlaced) {
+      // Normalize to A-Frame coordinate system (-1 to 1)
+      let xNorm = (centerX / canvas.width) * 2 - 1;
+      let yNorm = (centerY / canvas.height) * 2 - 1;
+      let zDepth = -1 - (yNorm * 0.5); // Estimate Z from Y
+
+      cube.setAttribute('position', {
+        x: xNorm,
+        y: 0,
+        z: zDepth
+      });
+
+      cube.setAttribute('visible', true);
+      isPlaced = true;
+    } else {
+      alert("No surface under center. Try again.");
+    }
+  });
+
+  // Main processing loop
   function processFrame() {
-    if (video.videoWidth === 0 || video.videoHeight === 0) {
+    if (video.videoWidth === 0 || video.videoHeight === 0 || !video.srcObject) {
       requestAnimationFrame(processFrame);
       return;
     }
 
-    const cw = video.videoWidth;
-    const ch = video.videoHeight;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    debugCanvas.width = canvas.width;
+    debugCanvas.height = canvas.height;
 
-    canvas.width = cw;
-    canvas.height = ch;
-    debugCanvas.width = cw;
-    debugCanvas.height = ch;
-
-    ctx.drawImage(video, 0, 0, cw, ch);
-    debugCtx.clearRect(0, 0, cw, ch);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
 
     if (!isPlaced) {
       try {
@@ -217,12 +346,13 @@
           let cnt = contours.get(i);
           let area = cv.contourArea(cnt);
 
-          if (area > 10000) { // Large enough to be considered floor
+          if (area > 10000) {
             let rect = cv.boundingRect(cnt);
             drawDebugOverlay(rect.x, rect.y, rect.width, rect.height);
           }
         }
 
+        // Cleanup
         src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
       } catch (err) {
         console.error("OpenCV Error:", err);
@@ -232,135 +362,21 @@
     requestAnimationFrame(processFrame);
   }
 
-  // Draw transparent green overlay over floor-like surfaces
+  // Draw semi-transparent overlay on floor-like surfaces
   function drawDebugOverlay(x, y, w, h) {
     debugCtx.fillStyle = "rgba(0, 255, 0, 0.3)";
     debugCtx.fillRect(x, y, w, h);
   }
 
-  // Start camera manually
-  document.getElementById('startButton').addEventListener('click', () => {
-    const selectedCamera = document.getElementById('cameraSelect').value;
-    if (!selectedCamera) {
-      alert("Please select a valid camera.");
-      return;
-    }
-
-    navigator.mediaDevices.getUserMedia({
-      video: { deviceId: { exact: selectedCamera } }
-    }).then(stream => {
-      video.srcObject = stream;
-      video.onloadedmetadata = () => {
-        video.play();
-        document.getElementById('startButton').style.display = 'none';
-        document.getElementById('rescanButton').style.display = 'block';
-        document.getElementById('placeCubeButton').style.display = 'block';
-      };
-    }).catch(err => {
-      alert("Failed to start selected camera.");
-      console.error("Camera error:", err);
+  // Utility: Get longest line
+  function getBestLine(lines) {
+    if (lines.length === 0) return null;
+    return lines.reduce((a, b) => {
+      let lenA = Math.hypot(a.x2 - a.x1, a.y2 - a.y1);
+      let lenB = Math.hypot(b.x2 - b.x1, b.y2 - b.y1);
+      return lenA > lenB ? a : b;
     });
-  });
-
-  // Reset placement
-  document.getElementById('rescanButton').addEventListener('click', () => {
-    cube.setAttribute('visible', false);
-    isPlaced = false;
-  });
-
-  // Place cube at screen center if floor detected
-  document.getElementById('placeCubeButton').addEventListener('click', () => {
-    const centerX = canvas.width / 2;
-    const centerY = canvas.height / 2;
-
-    try {
-      let src = cv.imread(canvas);
-      let gray = new cv.Mat();
-      let edges = new cv.Mat();
-
-      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-      cv.Canny(gray, edges, 50, 150);
-
-      let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
-      cv.dilate(edges, edges, kernel, new cv.Point(-1, -1), 5);
-      cv.erode(edges, edges, kernel, new cv.Point(-1, -1), 3);
-
-      let contours = new cv.MatVector();
-      let hierarchy = new cv.Mat();
-      cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-      let surfaceUnderCenter = false;
-
-      for (let i = 0; i < contours.size(); ++i) {
-        let cnt = contours.get(i);
-        let rect = cv.boundingRect(cnt);
-
-        if (
-          centerX >= rect.x &&
-          centerX <= rect.x + rect.width &&
-          centerY >= rect.y &&
-          centerY <= rect.y + rect.height
-        ) {
-          surfaceUnderCenter = true;
-          break;
-        }
-      }
-
-      // Cleanup
-      src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
-
-      if (surfaceUnderCenter) {
-        // Normalize center point to A-Frame coordinate system (-1 to 1)
-        let xNorm = (centerX / canvas.width) * 2 - 1;
-        let yNorm = (centerY / canvas.height) * 2 - 1;
-        let zDepth = -1 - (yNorm * 0.5);
-
-        cube.setAttribute('position', {
-          x: xNorm,
-          y: 0,
-          z: zDepth
-        });
-
-        cube.setAttribute('visible', true);
-        isPlaced = true;
-      } else {
-        alert("No floor under center. Point at flat surface.");
-      }
-
-    } catch (err) {
-      console.error("OpenCV Error:", err);
-    }
-  });
-
-  // Populate camera list
-  document.getElementById('cameraSelect').addEventListener('change', () => {
-    if (document.getElementById('cameraSelect').value) {
-      document.getElementById('startButton').style.display = 'block';
-    }
-  });
-
-  navigator.mediaDevices.enumerateDevices()
-    .then(devices => {
-      const videoDevices = devices.filter(device => device.kind === 'videoinput');
-      const select = document.getElementById('cameraSelect');
-
-      videoDevices.forEach((device, index) => {
-        const option = document.createElement('option');
-        option.value = device.deviceId;
-        option.text = `Camera ${index + 1} (${device.label || 'No label'})`;
-        select.appendChild(option);
-      });
-    })
-    .catch(err => {
-      console.error("Device enumeration failed", err);
-    });
-
-  // Reticle logic
-  document.body.addEventListener('click', () => {
-    if (!isPlaced && document.getElementById('placeCubeButton').style.display !== 'none') {
-      document.getElementById('placeCubeButton').click();
-    }
-  });
+  }
 </script>
 
 </body>
