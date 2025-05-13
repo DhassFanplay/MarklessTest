@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Floor Detection - Debug Overlay</title>
+  <title>AR Flat Floor Detection</title>
 
   <!-- Load A-Frame -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
@@ -278,16 +278,18 @@
 
     for (let i = 0; i < contours.size(); ++i) {
       let cnt = contours.get(i);
-      if (cv.contourArea(cnt) > 10000) {
+      let area = cv.contourArea(cnt);
+      if (area > 10000) {
         let rect = cv.boundingRect(cnt);
 
+        // Check if center point is inside this contour
         if (
           centerX >= rect.x &&
           centerX <= rect.x + rect.width &&
           centerY >= rect.y &&
           centerY <= rect.y + rect.height
         ) {
-          // Place cube
+          // Place cube at center
           let xNorm = (centerX / canvas.width) * 2 - 1;
           let yNorm = (centerY / canvas.height) * 2 - 1;
           let zDepth = -1 - (yNorm * 0.5);
@@ -296,7 +298,6 @@
           cube.setAttribute('visible', true);
           isPlaced = true;
           statusText.textContent = "Cube placed.";
-          statusText.style.display = 'block';
           surfaceDetected = true;
           break;
         }
@@ -348,13 +349,15 @@
 
         for (let i = 0; i < contours.size(); ++i) {
           let cnt = contours.get(i);
-          if (cv.contourArea(cnt) > 10000) {
+          let area = cv.contourArea(cnt);
+
+          if (area > 10000) {
             let rect = cv.boundingRect(cnt);
             ctx.strokeStyle = "lime";
             ctx.lineWidth = 3;
             ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
 
-            // Check if center point is over this contour
+            // Check if center point is inside this contour
             if (
               centerX >= rect.x &&
               centerX <= rect.x + rect.width &&
