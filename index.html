@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Floor Detection - Debugged</title>
+  <title>AR Floor Detection - Debug Overlay</title>
 
   <!-- Load A-Frame -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
@@ -68,13 +68,24 @@
       position: absolute;
       width: 30px;
       height: 30px;
-      border: 2px solid lime;
+      border: 2px solid red;
       border-radius: 50%;
       top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
       z-index: 30;
       pointer-events: none;
+    }
+
+    #statusText {
+      position: absolute;
+      bottom: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: lime;
+      font-size: 16px;
+      z-index: 100;
+      display: none;
     }
   </style>
 </head>
@@ -90,6 +101,8 @@
   <button id="rescanButton">Rescan Floor</button>
   <button id="placeCubeButton">Place Cube</button>
 </div>
+
+<div id="statusText">Looking for floor...</div>
 
 <video id="video" autoplay playsinline></video>
 <canvas id="canvas"></canvas>
@@ -124,6 +137,7 @@
   const canvas = document.getElementById('canvas');
   const ctx = canvas.getContext('2d');
   const cube = document.getElementById('placedCube');
+  const statusText = document.getElementById('statusText');
 
   let isPlaced = false;
 
@@ -234,6 +248,8 @@
   rescanButton.addEventListener('click', () => {
     cube.setAttribute('visible', false);
     isPlaced = false;
+    statusText.textContent = "Looking for floor...";
+    statusText.style.display = 'block';
   });
 
   // Place cube at current center if surface detected
@@ -279,6 +295,8 @@
           cube.setAttribute('position', { x: xNorm, y: 0, z: zDepth });
           cube.setAttribute('visible', true);
           isPlaced = true;
+          statusText.textContent = "Cube placed.";
+          statusText.style.display = 'block';
           surfaceDetected = true;
           break;
         }
@@ -289,7 +307,10 @@
     src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
 
     if (!surfaceDetected) {
-      alert("No surface detected at center. Try pointing at floor/table.");
+      statusText.textContent = "No surface under center. Try again.";
+      setTimeout(() => {
+        statusText.style.display = 'none';
+      }, 2000);
     }
   }
 
@@ -320,21 +341,20 @@
         const centerX = canvas.width / 2;
         const centerY = canvas.height / 2;
 
-        let surfaceUnderCenter = false;
-
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        let surfaceUnderCenter = false;
 
         for (let i = 0; i < contours.size(); ++i) {
           let cnt = contours.get(i);
           if (cv.contourArea(cnt) > 10000) {
             let rect = cv.boundingRect(cnt);
-
             ctx.strokeStyle = "lime";
             ctx.lineWidth = 3;
             ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
 
-            // Check if center is over this contour
+            // Check if center point is over this contour
             if (
               centerX >= rect.x &&
               centerX <= rect.x + rect.width &&
@@ -346,7 +366,7 @@
           }
         }
 
-        // Update reticle color based on detection
+        // Update reticle color
         const reticle = document.getElementById('reticle');
         reticle.style.borderColor = surfaceUnderCenter ? "lime" : "red";
 
