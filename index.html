@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Floor Detection - Place & Rescan</title>
+  <title>AR Floor Detection - Real-Time Center Scan</title>
 
   <!-- Load A-Frame -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
@@ -38,7 +38,7 @@
       z-index: 100;
     }
 
-    #cameraSelect, #startButton, #rescanButton, #placeCubeButton {
+    .overlay button {
       display: block;
       margin: 10px auto;
       padding: 15px 30px;
@@ -126,7 +126,6 @@
   const cube = document.getElementById('placedCube');
 
   let isPlaced = false;
-  let isDetecting = true;
 
   // Wait for OpenCV to load
   const checkCv = setInterval(() => {
@@ -231,16 +230,15 @@
     switchCamera(selectedCamera);
   });
 
-  // Rescan Button – Restart detection
+  // Reset cube placement and restart detection
   rescanButton.addEventListener('click', () => {
-    isDetecting = true;
     cube.setAttribute('visible', false);
     isPlaced = false;
   });
 
-  // Place Cube Button – Try placing cube at center
+  // Place cube at current center if surface detected
   placeCubeButton.addEventListener('click', () => {
-    if (!isPlaced && isDetecting) {
+    if (!isPlaced) {
       detectAndPlaceCube();
     }
   });
@@ -253,13 +251,9 @@
     let gray = new cv.Mat();
     let edges = new cv.Mat();
 
-    // Convert to grayscale
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-
-    // Canny edge detection
     cv.Canny(gray, edges, 50, 150);
 
-    // Find contours
     let contours = new cv.MatVector();
     let hierarchy = new cv.Mat();
     cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
@@ -275,7 +269,6 @@
           centerY >= rect.y &&
           centerY <= rect.y + rect.height
         ) {
-          // Place cube
           let xNorm = (centerX / canvas.width) * 2 - 1;
           let yNorm = (centerY / canvas.height) * 2 - 1;
           let zDepth = -1 - (yNorm * 0.5);
@@ -283,7 +276,6 @@
           cube.setAttribute('position', { x: xNorm, y: 0, z: zDepth });
           cube.setAttribute('visible', true);
           isPlaced = true;
-          isDetecting = false; // Stop scanning until rescan clicked
           break;
         }
       }
@@ -303,45 +295,57 @@
 
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    try {
-      let src = cv.imread(canvas);
-      let gray = new cv.Mat();
-      let edges = new cv.Mat();
+    if (!isPlaced) {
+      try {
+        let src = cv.imread(canvas);
+        let gray = new cv.Mat();
+        let edges = new cv.Mat();
 
-      // Convert to grayscale
-      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+        cv.Canny(gray, edges, 50, 150);
 
-      // Canny edge detection
-      cv.Canny(gray, edges, 50, 150);
+        let contours = new cv.MatVector();
+        let hierarchy = new cv.Mat();
+        cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-      // Find contours
-      let contours = new cv.MatVector();
-      let hierarchy = new cv.Mat();
-      cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      // Clear canvas and redraw original image
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const centerX = canvas.width / 2;
+        const centerY = canvas.height / 2;
 
-      const centerX = canvas.width / 2;
-      const centerY = canvas.height / 2;
+        let surfaceDetected = false;
 
-      // Highlight detected surface
-      for (let i = 0; i < contours.size(); ++i) {
-        let cnt = contours.get(i);
-        if (cv.contourArea(cnt) > 10000) {
-          let rect = cv.boundingRect(cnt);
+        for (let i = 0; i < contours.size(); ++i) {
+          let cnt = contours.get(i);
+          if (cv.contourArea(cnt) > 10000) {
+            let rect = cv.boundingRect(cnt);
 
-          ctx.strokeStyle = "lime";
-          ctx.lineWidth = 3;
-          ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+            if (
+              centerX >= rect.x &&
+              centerX <= rect.x + rect.width &&
+              centerY >= rect.y &&
+              centerY <= rect.y + rect.height
+            ) {
+              ctx.strokeStyle = "lime";
+              ctx.lineWidth = 3;
+              ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+              surfaceDetected = true;
+            }
+          }
         }
-      }
 
-      // Cleanup
-      src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
-    } catch (err) {
-      console.error("OpenCV Error:", err);
+        // If surface under center, show reticle
+        if (surfaceDetected) {
+          document.getElementById('reticle').style.borderColor = "lime";
+        } else {
+          document.getElementById('reticle').style.borderColor = "red";
+        }
+
+        src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+      } catch (err) {
+        console.error("OpenCV Error:", err);
+      }
     }
 
     requestAnimationFrame(processFrame);
