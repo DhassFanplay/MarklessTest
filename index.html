@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Flat Floor Detection</title>
+  <title>AR Floor Detection - Based on Python Reference</title>
 
   <!-- Load A-Frame -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
@@ -259,62 +259,6 @@
     }
   });
 
-  function detectAndPlaceCube() {
-    const centerX = canvas.width / 2;
-    const centerY = canvas.height / 2;
-
-    let src = cv.imread(canvas);
-    let gray = new cv.Mat();
-    let edges = new cv.Mat();
-
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-    cv.Canny(gray, edges, 50, 150);
-
-    let contours = new cv.MatVector();
-    let hierarchy = new cv.Mat();
-    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-    let surfaceDetected = false;
-
-    for (let i = 0; i < contours.size(); ++i) {
-      let cnt = contours.get(i);
-      let area = cv.contourArea(cnt);
-      if (area > 10000) {
-        let rect = cv.boundingRect(cnt);
-
-        // Check if center point is inside this contour
-        if (
-          centerX >= rect.x &&
-          centerX <= rect.x + rect.width &&
-          centerY >= rect.y &&
-          centerY <= rect.y + rect.height
-        ) {
-          // Place cube at center
-          let xNorm = (centerX / canvas.width) * 2 - 1;
-          let yNorm = (centerY / canvas.height) * 2 - 1;
-          let zDepth = -1 - (yNorm * 0.5);
-
-          cube.setAttribute('position', { x: xNorm, y: 0, z: zDepth });
-          cube.setAttribute('visible', true);
-          isPlaced = true;
-          statusText.textContent = "Cube placed.";
-          surfaceDetected = true;
-          break;
-        }
-      }
-    }
-
-    // Cleanup
-    src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
-
-    if (!surfaceDetected) {
-      statusText.textContent = "No surface under center. Try again.";
-      setTimeout(() => {
-        statusText.style.display = 'none';
-      }, 2000);
-    }
-  }
-
   function processFrame() {
     if (video.videoWidth === 0 || video.videoHeight === 0) {
       requestAnimationFrame(processFrame);
@@ -332,55 +276,141 @@
         let gray = new cv.Mat();
         let edges = new cv.Mat();
 
+        // Convert to grayscale
         cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-        cv.Canny(gray, edges, 50, 150);
 
-        let contours = new cv.MatVector();
-        let hierarchy = new cv.Mat();
-        cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+        // Canny edge detection
+        cv.Canny(gray, edges, 50, 150, 3, true); // apertureSize=3, L2gradient=true
 
-        const centerX = canvas.width / 2;
-        const centerY = canvas.height / 2;
+        // Morphological operations
+        let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+        cv.dilate(edges, edges, kernel, new cv.Point(-1, -1), 5);
+        cv.erode(edges, edges, kernel, new cv.Point(-1, -1), 3);
 
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        // Blob detection
+        let labels = new cv.Mat();
+        let no_of_blobs = cv.connectedComponents(edges, labels, 8, cv.CV_32S);
 
-        let surfaceUnderCenter = false;
-
-        for (let i = 0; i < contours.size(); ++i) {
-          let cnt = contours.get(i);
-          let area = cv.contourArea(cnt);
-
-          if (area > 10000) {
-            let rect = cv.boundingRect(cnt);
-            ctx.strokeStyle = "lime";
-            ctx.lineWidth = 3;
-            ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
-
-            // Check if center point is inside this contour
-            if (
-              centerX >= rect.x &&
-              centerX <= rect.x + rect.width &&
-              centerY >= rect.y &&
-              centerY <= rect.y + rect.height
-            ) {
-              surfaceUnderCenter = true;
-            }
-          }
-        }
-
-        // Update reticle color
-        const reticle = document.getElementById('reticle');
-        reticle.style.borderColor = surfaceUnderCenter ? "lime" : "red";
+        // Hough Lines Detection
+        let lines = new cv.Mat();
+        cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 20, 20, 10);
 
         // Cleanup
-        src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+        src.delete(); gray.delete(); edges.delete(); labels.delete();
       } catch (err) {
         console.error("OpenCV Error:", err);
       }
     }
 
     requestAnimationFrame(processFrame);
+  }
+
+  function detectAndPlaceCube() {
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+
+    let src = cv.imread(canvas);
+    let gray = new cv.Mat();
+    let edges = new cv.Mat();
+
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.Canny(gray, edges, 50, 150, 3, true);
+
+    let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+    cv.dilate(edges, edges, kernel, new cv.Point(-1, -1), 5);
+    cv.erode(edges, edges, kernel, new cv.Point(-1, -1), 3);
+
+    // Hough Lines Detection
+    let lines = new cv.Mat();
+    cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 20, 20, 10);
+
+    // Blob detection
+    let labels = new cv.Mat();
+    let no_of_blobs = cv.connectedComponents(edges, labels, 8, cv.CV_32S);
+
+    let leftLines = [];
+    let rightLines = [];
+
+    for (let i = 0; i < lines.rows; ++i) {
+      let x1 = lines.data32S[i * 4];
+      let y1 = lines.data32S[i * 4 + 1];
+      let x2 = lines.data32S[i * 4 + 2];
+      let y2 = lines.data32S[i * 4 + 3];
+
+      let dx = x2 - x1;
+      let dy = y2 - y1;
+      let length = Math.sqrt(dx * dx + dy * dy);
+      if (length < 20) continue;
+
+      let slope = (y2 - y1) / (x2 - x1 || 0.0001);
+      slope = parseFloat(slope.toFixed(2));
+
+      // Skip near-vertical/horizontal lines
+      if (Math.abs(slope) < 0.1 || Math.abs(slope) > 10) continue;
+
+      if (slope > 0) {
+        leftLines.push({ x1, y1, x2, y2 });
+      } else {
+        rightLines.push({ x1, y1, x2, y2 });
+      }
+    }
+
+    // Find best lines
+    let bestLeft = getBestLine(leftLines);
+    let bestRight = getBestLine(rightLines);
+
+    // Estimate floor center line
+    if (bestLeft && bestRight) {
+      let rows = canvas.height;
+      let cols = canvas.width;
+
+      let slope_left = ((bestLeft.y1 - bestLeft.y2) / (bestLeft.x2 - bestLeft.x1)) || 0;
+      let slope_right = ((bestRight.y1 - bestRight.y2) / (bestRight.x2 - bestRight.x1)) || 0;
+
+      let x_bottom_left = Math.min(bestLeft.x1, bestLeft.x2);
+      let y_bottom_left = Math.max(bestLeft.y1, bestLeft.y2);
+      let x_top_left = Math.max(bestLeft.x1, bestLeft.x2);
+      let y_top_left = Math.min(bestLeft.y1, bestLeft.y2);
+
+      let x_bottom_right = Math.max(bestRight.x1, bestRight.x2);
+      let y_bottom_right = Math.max(bestRight.y1, bestRight.y2);
+      let x_top_right = Math.min(bestRight.x1, bestRight.x2);
+      let y_top_right = Math.min(bestRight.y1, bestRight.y2);
+
+      // Extend lines to frame height
+      if (slope_left !== 0) {
+        x_top_left = x_bottom_left + (rows - y_bottom_left) / slope_left;
+      }
+
+      if (slope_right !== 0) {
+        x_top_right = x_bottom_right + (rows - y_bottom_right) / slope_right;
+      }
+
+      // Estimate floor center point
+      let x_floor_center = (x_bottom_left + x_bottom_right) / 2;
+      let y_floor_center = y_bottom_left;
+
+      // Place cube only once
+      let xNorm = (x_floor_center / canvas.width) * 2 - 1;
+      let yNorm = (y_floor_center / canvas.height) * 2 - 1;
+      let zDepth = -1 - (yNorm * 0.5);
+
+      cube.setAttribute('position', { x: xNorm, y: 0, z: zDepth });
+      cube.setAttribute('visible', true);
+      isPlaced = true;
+    }
+
+    // Cleanup
+    src.delete(); gray.delete(); edges.delete(); lines.delete(); labels.delete();
+  }
+
+  function getBestLine(lines) {
+    if (lines.length === 0) return null;
+    return lines.reduce((best, curr) => {
+      let len1 = Math.hypot(best.x2 - best.x1, best.y2 - best.y1);
+      let len2 = Math.hypot(curr.x2 - curr.x1, curr.y2 - curr.y1);
+      return len1 > len2 ? best : curr;
+    });
   }
 </script>
 
