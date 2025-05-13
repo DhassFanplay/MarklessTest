@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Floor Detection - Based on Python Reference</title>
+  <title>AR Floor Detection - Based on Python Logic</title>
 
   <!-- Load A-Frame -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
@@ -252,7 +252,7 @@
     statusText.style.display = 'block';
   });
 
-  // Place cube at current center if surface detected
+  // Place cube based on floor center point
   placeCubeButton.addEventListener('click', () => {
     if (!isPlaced) {
       detectAndPlaceCube();
@@ -276,27 +276,119 @@
         let gray = new cv.Mat();
         let edges = new cv.Mat();
 
-        // Convert to grayscale
         cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+        cv.Canny(gray, edges, 50, 150);
 
-        // Canny edge detection
-        cv.Canny(gray, edges, 50, 150, 3, true); // apertureSize=3, L2gradient=true
-
-        // Morphological operations
         let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
         cv.dilate(edges, edges, kernel, new cv.Point(-1, -1), 5);
         cv.erode(edges, edges, kernel, new cv.Point(-1, -1), 3);
 
-        // Blob detection
-        let labels = new cv.Mat();
-        let no_of_blobs = cv.connectedComponents(edges, labels, 8, cv.CV_32S);
-
-        // Hough Lines Detection
+        // Hough Line Detection
         let lines = new cv.Mat();
         cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 20, 20, 10);
 
+        let centerX = canvas.width / 2;
+        let centerY = canvas.height / 2;
+        let leftLines = [];
+        let rightLines = [];
+
+        for (let i = 0; i < lines.rows; ++i) {
+          let x1 = lines.data32S[i * 4];
+          let y1 = lines.data32S[i * 4 + 1];
+          let x2 = lines.data32S[i * 4 + 2];
+          let y2 = lines.data32S[i * 4 + 3];
+
+          let dx = x2 - x1;
+          let dy = y2 - y1;
+          let length = Math.sqrt(dx * dx + dy * dy);
+          if (length < 20) continue;
+
+          let slope = (y2 - y1) / (dx || 0.0001); // avoid divide by zero
+          slope = parseFloat(slope.toFixed(2));
+
+          // Skip near-vertical/horizontal lines
+          if (Math.abs(slope) < 0.1 || Math.abs(slope) > 10) continue;
+
+          if (slope > 0) {
+            leftLines.push({ x1, y1, x2, y2 });
+          } else {
+            rightLines.push({ x1, y1, x2, y2 });
+          }
+        }
+
+        // Find best lines
+        let bestLeft = getBestLine(leftLines);
+        let bestRight = getBestLine(rightLines);
+
+        // Draw floor lines for debugging
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        let surfaceUnderCenter = false;
+
+        if (bestLeft && bestRight) {
+          // Extend lines to bottom/top
+          let x_bottom_left = Math.min(bestLeft.x1, bestLeft.x2);
+          let y_bottom_left = Math.max(bestLeft.y1, bestLeft.y2);
+          let x_top_left = Math.max(bestLeft.x1, bestLeft.x2);
+          let y_top_left = Math.min(bestLeft.y1, bestLeft.y2);
+
+          let x_bottom_right = Math.max(bestRight.x1, bestRight.x2);
+          let y_bottom_right = Math.max(bestRight.y1, bestRight.y2);
+          let x_top_right = Math.min(bestRight.x1, bestRight.x2);
+          let y_top_right = Math.min(bestRight.y1, bestRight.y2);
+
+          // Estimate floor center line
+          let slope_left = (y_bottom_left - y_top_left) / (x_top_left - x_bottom_left || 0.0001);
+          let slope_right = (y_bottom_right - y_top_right) / (x_top_right - x_bottom_right || 0.0001);
+
+          // Normalize slopes
+          slope_left = parseFloat(slope_left.toFixed(2));
+          slope_right = parseFloat(slope_right.toFixed(2));
+
+          // Extend floor lines vertically
+          let y_floor_base = canvas.height;
+          let y_floor_top = canvas.height / 3;
+
+          let x_bottom_center = (x_bottom_left + x_bottom_right) / 2;
+          let y_bottom_center = y_floor_base;
+          let x_top_center = (x_top_left + x_top_right) / 2;
+          let y_top_center = y_floor_top;
+
+          // Optional: draw floor center line
+          ctx.strokeStyle = "lime";
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.moveTo(x_bottom_center, y_bottom_center);
+          ctx.lineTo(x_top_center, y_top_center);
+          ctx.stroke();
+
+          // Check if center of screen is above floor line
+          const rect = canvas.getBoundingClientRect();
+          const mouseX = rect.left + window.innerWidth / 2;
+          const mouseY = rect.top + window.innerHeight / 2;
+
+          // Approximate if we are pointing at floor area
+          let distanceToFloorLine = Math.abs(
+            (y_top_center - y_bottom_center) * mouseX -
+            (x_top_center - x_bottom_center) * mouseY +
+            x_top_center * y_bottom_center - y_top_center * x_bottom_center
+          ) / Math.hypot(y_top_center - y_bottom_center, x_top_center - x_bottom_center);
+
+          if (distanceToFloorLine < 20) {
+            document.getElementById('reticle').style.borderColor = "lime";
+            surfaceUnderCenter = true;
+          } else {
+            document.getElementById('reticle').style.borderColor = "red";
+            surfaceUnderCenter = false;
+          }
+
+        } else {
+          document.getElementById('reticle').style.borderColor = "red";
+        }
+
         // Cleanup
-        src.delete(); gray.delete(); edges.delete(); labels.delete();
+        src.delete(); edges.delete(); lines.delete();
       } catch (err) {
         console.error("OpenCV Error:", err);
       }
@@ -314,19 +406,15 @@
     let edges = new cv.Mat();
 
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-    cv.Canny(gray, edges, 50, 150, 3, true);
+    cv.Canny(gray, edges, 50, 150);
 
     let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
     cv.dilate(edges, edges, kernel, new cv.Point(-1, -1), 5);
     cv.erode(edges, edges, kernel, new cv.Point(-1, -1), 3);
 
-    // Hough Lines Detection
+    // Hough Line Detection
     let lines = new cv.Mat();
     cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 20, 20, 10);
-
-    // Blob detection
-    let labels = new cv.Mat();
-    let no_of_blobs = cv.connectedComponents(edges, labels, 8, cv.CV_32S);
 
     let leftLines = [];
     let rightLines = [];
@@ -342,10 +430,7 @@
       let length = Math.sqrt(dx * dx + dy * dy);
       if (length < 20) continue;
 
-      let slope = (y2 - y1) / (x2 - x1 || 0.0001);
-      slope = parseFloat(slope.toFixed(2));
-
-      // Skip near-vertical/horizontal lines
+      let slope = (dy / (dx || 0.0001)).toFixed(2);
       if (Math.abs(slope) < 0.1 || Math.abs(slope) > 10) continue;
 
       if (slope > 0) {
@@ -361,12 +446,6 @@
 
     // Estimate floor center line
     if (bestLeft && bestRight) {
-      let rows = canvas.height;
-      let cols = canvas.width;
-
-      let slope_left = ((bestLeft.y1 - bestLeft.y2) / (bestLeft.x2 - bestLeft.x1)) || 0;
-      let slope_right = ((bestRight.y1 - bestRight.y2) / (bestRight.x2 - bestRight.x1)) || 0;
-
       let x_bottom_left = Math.min(bestLeft.x1, bestLeft.x2);
       let y_bottom_left = Math.max(bestLeft.y1, bestLeft.y2);
       let x_top_left = Math.max(bestLeft.x1, bestLeft.x2);
@@ -377,31 +456,31 @@
       let x_top_right = Math.min(bestRight.x1, bestRight.x2);
       let y_top_right = Math.min(bestRight.y1, bestRight.y2);
 
-      // Extend lines to frame height
-      if (slope_left !== 0) {
-        x_top_left = x_bottom_left + (rows - y_bottom_left) / slope_left;
-      }
+      // Compute floor center line
+      let x_bottom_center = (x_bottom_left + x_bottom_right) / 2;
+      let y_bottom_center = (y_bottom_left + y_bottom_right) / 2;
+      let x_top_center = (x_top_left + x_top_right) / 2;
+      let y_top_center = (y_top_left + y_top_right) / 2;
 
-      if (slope_right !== 0) {
-        x_top_right = x_bottom_right + (rows - y_bottom_right) / slope_right;
-      }
-
-      // Estimate floor center point
-      let x_floor_center = (x_bottom_left + x_bottom_right) / 2;
-      let y_floor_center = y_bottom_left;
-
-      // Place cube only once
-      let xNorm = (x_floor_center / canvas.width) * 2 - 1;
-      let yNorm = (y_floor_center / canvas.height) * 2 - 1;
+      // Convert to normalized A-Frame coordinates
+      let xNorm = (x_bottom_center / canvas.width) * 2 - 1;
+      let yNorm = (y_bottom_center / canvas.height) * 2 - 1;
       let zDepth = -1 - (yNorm * 0.5);
 
       cube.setAttribute('position', { x: xNorm, y: 0, z: zDepth });
       cube.setAttribute('visible', true);
       isPlaced = true;
+      statusText.textContent = "Cube placed.";
+      statusText.style.display = 'block';
+      setTimeout(() => statusText.style.display = 'none', 2000);
+    } else {
+      statusText.textContent = "No floor detected under center.";
+      statusText.style.display = 'block';
+      setTimeout(() => statusText.style.display = 'none', 2000);
     }
 
     // Cleanup
-    src.delete(); gray.delete(); edges.delete(); lines.delete(); labels.delete();
+    src.delete(); gray.delete(); edges.delete(); lines.delete();
   }
 
   function getBestLine(lines) {
@@ -411,6 +490,134 @@
       let len2 = Math.hypot(curr.x2 - curr.x1, curr.y2 - curr.y1);
       return len1 > len2 ? best : curr;
     });
+  }
+
+  function processFrame() {
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      requestAnimationFrame(processFrame);
+      return;
+    }
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    if (!isPlaced) {
+      try {
+        let src = cv.imread(canvas);
+        let gray = new cv.Mat();
+        let edges = new cv.Mat();
+
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+        cv.Canny(gray, edges, 50, 150);
+
+        let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+        cv.dilate(edges, edges, kernel, new cv.Point(-1, -1), 5);
+        cv.erode(edges, edges, kernel, new cv.Point(-1, -1), 3);
+
+        // Hough Line Detection
+        let lines = new cv.Mat();
+        cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 20, 20, 10);
+
+        let leftLines = [];
+        let rightLines = [];
+
+        for (let i = 0; i < lines.rows; ++i) {
+          let x1 = lines.data32S[i * 4];
+          let y1 = lines.data32S[i * 4 + 1];
+          let x2 = lines.data32S[i * 4 + 2];
+          let y2 = lines.data32S[i * 4 + 3];
+
+          let dx = x2 - x1;
+          let dy = y2 - y1;
+          let length = Math.sqrt(dx * dx + dy * dy);
+          if (length < 20) continue;
+
+          let slope = (dy / (dx || 0.0001)).toFixed(2);
+          slope = parseFloat(slope);
+
+          if (Math.abs(slope) < 0.1 || Math.abs(slope) > 10) continue;
+
+          if (slope > 0) {
+            leftLines.push({ x1, y1, x2, y2 });
+          } else {
+            rightLines.push({ x1, y1, x2, y2 });
+          }
+        }
+
+        let bestLeft = getBestLine(leftLines);
+        let bestRight = getBestLine(rightLines);
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        if (bestLeft && bestRight) {
+          let x_bottom_left = Math.min(bestLeft.x1, bestLeft.x2);
+          let y_bottom_left = Math.max(bestLeft.y1, bestLeft.y2);
+          let x_top_left = Math.max(bestLeft.x1, bestLeft.x2);
+          let y_top_left = Math.min(bestLeft.y1, bestLeft.y2);
+
+          let x_bottom_right = Math.max(bestRight.x1, bestRight.x2);
+          let y_bottom_right = Math.max(bestRight.y1, bestRight.y2);
+          let x_top_right = Math.min(bestRight.x1, bestRight.x2);
+          let y_top_right = Math.min(bestRight.y1, bestRight.y2);
+
+          // Draw left/right floor edge lines
+          ctx.strokeStyle = "blue";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(x_bottom_left, y_bottom_left);
+          ctx.lineTo(x_top_left, y_top_left);
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.moveTo(x_bottom_right, y_bottom_right);
+          ctx.lineTo(x_top_right, y_top_right);
+          ctx.stroke();
+
+          // Floor center line
+          let x_floor_center = (x_bottom_left + x_bottom_right) / 2;
+          let y_floor_center = (y_bottom_left + y_bottom_right) / 2;
+
+          // Reticle color change
+          const reticle = document.getElementById('reticle');
+          const centerX = canvas.width / 2;
+          const centerY = canvas.height / 2;
+
+          let distanceToLine = Math.abs(
+            (y_top_left - y_bottom_left) * x_floor_center -
+            (x_top_left - x_bottom_left) * y_floor_center +
+            x_top_left * y_bottom_left -
+            y_top_left * x_bottom_left
+          ) / Math.hypot(y_top_left - y_bottom_left, x_top_left - x_bottom_left);
+
+          if (distanceToLine < 20) {
+            reticle.style.borderColor = "lime";
+          } else {
+            reticle.style.borderColor = "red";
+          }
+        }
+
+        // Cleanup
+        src.delete(); gray.delete(); edges.delete(); lines.delete();
+      } catch (err) {
+        console.error("OpenCV Error:", err);
+      }
+    }
+
+    requestAnimationFrame(processFrame);
+  }
+
+  // Start the app after everything loads
+  function startApp() {
+    const selectedCamera = cameraSelect.value;
+    if (!selectedCamera) {
+      alert("Please select a camera first.");
+      return;
+    }
+
+    switchCamera(selectedCamera);
   }
 </script>
 
