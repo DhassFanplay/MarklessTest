@@ -40,7 +40,6 @@
       pointer-events: none;
     }
 
-    /* Ensure A-Frame doesn't block interactions */
     a-scene {
       position: absolute;
       top: 0;
@@ -64,15 +63,16 @@
     <a-entity light="type: ambient; intensity: 0.5;"></a-entity>
     <a-entity light="type: directional; color: #fff; intensity: 0.7;" position="-1 1 0"></a-entity>
 
-    <!-- Reticle -->
+    <!-- Reticle for aiming -->
     <a-entity
+      id="reticle"
       cursor="fuse: true; fuseTimeout: 500"
       position="0 0 -1"
       geometry="primitive: ring; radiusInner: 0.02; radiusOuter: 0.03"
       material="color: yellow; shader: flat"
     ></a-entity>
 
-    <!-- Hidden cube -->
+    <!-- Hidden cube to be placed -->
     <a-box id="arCube"
       color="red"
       depth="0.5"
@@ -92,6 +92,7 @@
       const cube = document.getElementById('arCube');
       const placeButton = document.getElementById('placeButton');
       const loadingText = document.getElementById('loadingText');
+      const reticle = document.getElementById('reticle');
 
       let isPlaced = false;
 
@@ -101,45 +102,57 @@
         placeButton.style.display = 'block';
       }, 3000);
 
-      // Add click listener
-      placeButton.addEventListener('click', () => {
-        console.log("Place button clicked!");
+      // Reticle auto-follow plane
+      function updateReticle() {
+        const arEl = scene.arSceneComponent;
+        if (!arEl || !arEl.system.supportsHitTest) return;
 
+        arEl.system.hitTest({ x: 0.5, y: 0.5 }).then((results) => {
+          if (results.length > 0) {
+            const hit = results[0];
+            reticle.setAttribute('position', {
+              x: hit.worldPosition.x,
+              y: hit.worldPosition.y,
+              z: hit.worldPosition.z
+            });
+          }
+        });
+
+        requestAnimationFrame(updateReticle);
+      }
+
+      updateReticle(); // Start updating reticle
+
+      // Place cube when button clicked
+      placeButton.addEventListener('click', () => {
         if (isPlaced) return;
 
-        const cameraEl = document.querySelector('[camera]');
-        const camera = cameraEl.getObject3D('camera');
-        if (!camera) {
-          alert("Camera not ready yet.");
+        const arEl = scene.arSceneComponent;
+        if (!arEl || !arEl.system.supportsHitTest) {
+          alert("Hit test not supported on this device.");
           return;
         }
 
-        const raycaster = new THREE.Raycaster();
-        const mouse = new THREE.Vector2(0, 0); // Center of screen
-        raycaster.setFromCamera(mouse, camera);
+        arEl.system.hitTest({ x: 0.5, y: 0.5 }).then((results) => {
+          if (results.length > 0) {
+            const hit = results[0];
 
-        const intersects = raycaster.intersectObjects(
-          scene.object3D.children.filter(obj => obj.visible),
-          true
-        );
+            cube.setAttribute('position', {
+              x: hit.worldPosition.x,
+              y: hit.worldPosition.y + 0.25,
+              z: hit.worldPosition.z
+            });
 
-        if (intersects.length > 0) {
-          const hitPoint = intersects[0].point;
-          console.log("Hit point:", hitPoint);
-
-          cube.setAttribute('position', {
-            x: hitPoint.x,
-            y: hitPoint.y + 0.25, // Slightly above ground
-            z: hitPoint.z
-          });
-
-          cube.setAttribute('visible', true);
-          placeButton.style.display = 'none';
-          loadingText.innerText = "Cube placed!";
-          isPlaced = true;
-        } else {
-          alert("No surface detected. Point at a flat area and try again.");
-        }
+            cube.setAttribute('visible', true);
+            placeButton.style.display = 'none';
+            loadingText.innerText = "Cube placed!";
+            isPlaced = true;
+          } else {
+            alert("No surface detected. Point at a flat area and try again.");
+          }
+        }).catch(() => {
+          alert("Hit test failed. Try moving the camera around.");
+        });
       });
     });
   </script>
