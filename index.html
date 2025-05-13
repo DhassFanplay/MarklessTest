@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Floor Detection - Real-Time Center Scan</title>
+  <title>AR Floor Detection - Debugged</title>
 
   <!-- Load A-Frame -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
@@ -258,6 +258,8 @@
     let hierarchy = new cv.Mat();
     cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
+    let surfaceDetected = false;
+
     for (let i = 0; i < contours.size(); ++i) {
       let cnt = contours.get(i);
       if (cv.contourArea(cnt) > 10000) {
@@ -269,6 +271,7 @@
           centerY >= rect.y &&
           centerY <= rect.y + rect.height
         ) {
+          // Place cube
           let xNorm = (centerX / canvas.width) * 2 - 1;
           let yNorm = (centerY / canvas.height) * 2 - 1;
           let zDepth = -1 - (yNorm * 0.5);
@@ -276,12 +279,18 @@
           cube.setAttribute('position', { x: xNorm, y: 0, z: zDepth });
           cube.setAttribute('visible', true);
           isPlaced = true;
+          surfaceDetected = true;
           break;
         }
       }
     }
 
+    // Cleanup
     src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+
+    if (!surfaceDetected) {
+      alert("No surface detected at center. Try pointing at floor/table.");
+    }
   }
 
   function processFrame() {
@@ -308,40 +317,40 @@
         let hierarchy = new cv.Mat();
         cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
         const centerX = canvas.width / 2;
         const centerY = canvas.height / 2;
 
-        let surfaceDetected = false;
+        let surfaceUnderCenter = false;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
         for (let i = 0; i < contours.size(); ++i) {
           let cnt = contours.get(i);
           if (cv.contourArea(cnt) > 10000) {
             let rect = cv.boundingRect(cnt);
 
+            ctx.strokeStyle = "lime";
+            ctx.lineWidth = 3;
+            ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+
+            // Check if center is over this contour
             if (
               centerX >= rect.x &&
               centerX <= rect.x + rect.width &&
               centerY >= rect.y &&
               centerY <= rect.y + rect.height
             ) {
-              ctx.strokeStyle = "lime";
-              ctx.lineWidth = 3;
-              ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
-              surfaceDetected = true;
+              surfaceUnderCenter = true;
             }
           }
         }
 
-        // If surface under center, show reticle
-        if (surfaceDetected) {
-          document.getElementById('reticle').style.borderColor = "lime";
-        } else {
-          document.getElementById('reticle').style.borderColor = "red";
-        }
+        // Update reticle color based on detection
+        const reticle = document.getElementById('reticle');
+        reticle.style.borderColor = surfaceUnderCenter ? "lime" : "red";
 
+        // Cleanup
         src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
       } catch (err) {
         console.error("OpenCV Error:", err);
