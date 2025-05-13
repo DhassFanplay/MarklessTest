@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Floor Detection - Replace Cube</title>
+  <title>AR Floor Detection - Place & Rescan</title>
 
   <!-- Load A-Frame -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
@@ -38,7 +38,7 @@
       z-index: 100;
     }
 
-    #cameraSelect, #startButton, #replaceCubeButton {
+    #cameraSelect, #startButton, #rescanButton, #placeCubeButton {
       display: block;
       margin: 10px auto;
       padding: 15px 30px;
@@ -50,7 +50,7 @@
       cursor: pointer;
     }
 
-    #replaceCubeButton {
+    #rescanButton, #placeCubeButton {
       display: none;
     }
 
@@ -87,7 +87,8 @@
     <option value="">Select Camera</option>
   </select>
   <button id="startButton">Start Camera</button>
-  <button id="replaceCubeButton">Replace Cube</button>
+  <button id="rescanButton">Rescan Floor</button>
+  <button id="placeCubeButton">Place Cube</button>
 </div>
 
 <video id="video" autoplay playsinline></video>
@@ -117,13 +118,15 @@
 <script>
   const cameraSelect = document.getElementById('cameraSelect');
   const startButton = document.getElementById('startButton');
-  const replaceCubeButton = document.getElementById('replaceCubeButton');
+  const rescanButton = document.getElementById('rescanButton');
+  const placeCubeButton = document.getElementById('placeCubeButton');
   const video = document.getElementById('video');
   const canvas = document.getElementById('canvas');
   const ctx = canvas.getContext('2d');
   const cube = document.getElementById('placedCube');
 
   let isPlaced = false;
+  let isDetecting = true;
 
   // Wait for OpenCV to load
   const checkCv = setInterval(() => {
@@ -189,7 +192,8 @@
       };
 
       startButton.style.display = 'none';
-      replaceCubeButton.style.display = 'block';
+      rescanButton.style.display = 'block';
+      placeCubeButton.style.display = 'block';
 
       requestAnimationFrame(processFrame);
     } catch (err) {
@@ -206,7 +210,8 @@
         };
 
         startButton.style.display = 'none';
-        replaceCubeButton.style.display = 'block';
+        rescanButton.style.display = 'block';
+        placeCubeButton.style.display = 'block';
 
         requestAnimationFrame(processFrame);
       } catch (fallbackErr) {
@@ -226,12 +231,66 @@
     switchCamera(selectedCamera);
   });
 
-  // Replace cube on button click
-  replaceCubeButton.addEventListener('click', () => {
-    isPlaced = false;
+  // Rescan Button – Restart detection
+  rescanButton.addEventListener('click', () => {
+    isDetecting = true;
     cube.setAttribute('visible', false);
-    requestAnimationFrame(processFrame); // restart detection loop
+    isPlaced = false;
   });
+
+  // Place Cube Button – Try placing cube at center
+  placeCubeButton.addEventListener('click', () => {
+    if (!isPlaced && isDetecting) {
+      detectAndPlaceCube();
+    }
+  });
+
+  function detectAndPlaceCube() {
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+
+    let src = cv.imread(canvas);
+    let gray = new cv.Mat();
+    let edges = new cv.Mat();
+
+    // Convert to grayscale
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+    // Canny edge detection
+    cv.Canny(gray, edges, 50, 150);
+
+    // Find contours
+    let contours = new cv.MatVector();
+    let hierarchy = new cv.Mat();
+    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+    for (let i = 0; i < contours.size(); ++i) {
+      let cnt = contours.get(i);
+      if (cv.contourArea(cnt) > 10000) {
+        let rect = cv.boundingRect(cnt);
+
+        if (
+          centerX >= rect.x &&
+          centerX <= rect.x + rect.width &&
+          centerY >= rect.y &&
+          centerY <= rect.y + rect.height
+        ) {
+          // Place cube
+          let xNorm = (centerX / canvas.width) * 2 - 1;
+          let yNorm = (centerY / canvas.height) * 2 - 1;
+          let zDepth = -1 - (yNorm * 0.5);
+
+          cube.setAttribute('position', { x: xNorm, y: 0, z: zDepth });
+          cube.setAttribute('visible', true);
+          isPlaced = true;
+          isDetecting = false; // Stop scanning until rescan clicked
+          break;
+        }
+      }
+    }
+
+    src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+  }
 
   function processFrame() {
     if (video.videoWidth === 0 || video.videoHeight === 0) {
@@ -267,35 +326,15 @@
       const centerX = canvas.width / 2;
       const centerY = canvas.height / 2;
 
-      // Loop through contours
+      // Highlight detected surface
       for (let i = 0; i < contours.size(); ++i) {
         let cnt = contours.get(i);
-        if (cv.contourArea(cnt) > 10000) { // Large enough to be floor-like
+        if (cv.contourArea(cnt) > 10000) {
           let rect = cv.boundingRect(cnt);
 
-          // Check if center point is inside the contour
-          if (
-            centerX >= rect.x &&
-            centerX <= rect.x + rect.width &&
-            centerY >= rect.y &&
-            centerY <= rect.y + rect.height
-          ) {
-            // Only place if not already placed
-            if (!isPlaced) {
-              let xNorm = (centerX / canvas.width) * 2 - 1;
-              let yNorm = (centerY / canvas.height) * 2 - 1;
-              let zDepth = -1 - (yNorm * 0.5);
-
-              cube.setAttribute('position', { x: xNorm, y: 0, z: zDepth });
-              cube.setAttribute('visible', true);
-              isPlaced = true;
-            }
-
-            // Highlight detected surface
-            ctx.strokeStyle = "lime";
-            ctx.lineWidth = 3;
-            ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
-          }
+          ctx.strokeStyle = "lime";
+          ctx.lineWidth = 3;
+          ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
         }
       }
 
