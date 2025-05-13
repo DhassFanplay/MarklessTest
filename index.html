@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>OpenCV + A-Frame AR Surface Placement</title>
+  <title>OpenCV + A-Frame - Camera Selection</title>
 
   <!-- Load A-Frame FIRST -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
@@ -38,6 +38,16 @@
       z-index: 10;
     }
 
+    #cameraSelect {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 10px 20px;
+      font-size: 16px;
+      z-index: 100;
+    }
+
     a-scene {
       position: absolute;
       top: 0;
@@ -65,6 +75,11 @@
 </head>
 
 <body>
+
+<!-- Camera Selector Dropdown -->
+<select id="cameraSelect" onchange="switchCamera(this.value)">
+  <option value="">Select Camera</option>
+</select>
 
 <div id="loading">Waiting for camera...</div>
 <video id="video" autoplay playsinline></video>
@@ -97,29 +112,61 @@
   const canvas = document.getElementById('canvas');
   const ctx = canvas.getContext('2d');
   const cube = document.getElementById('placedCube');
+  const cameraSelect = document.getElementById('cameraSelect');
 
   let isPlaced = false;
+  let currentStream = null;
 
   // Wait for OpenCV to load
   const checkCv = setInterval(() => {
     if (typeof cv !== 'undefined') {
       clearInterval(checkCv);
-      initCamera();
+      getCameras();
     }
   }, 100);
 
-  function initCamera() {
-    navigator.mediaDevices.getUserMedia({ video: true })
-      .then(stream => {
-        video.srcObject = stream;
-        video.play();
-        loading.innerText = "Processing video...";
-        requestAnimationFrame(processFrame);
-      })
-      .catch(err => {
-        loading.innerText = "Camera access denied or not supported.";
-        console.error("Webcam error:", err);
+  // Get list of available cameras
+  async function getCameras() {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const videoDevices = devices.filter(device => device.kind === 'videoinput');
+    
+    if (videoDevices.length > 0) {
+      videoDevices.forEach((device, index) => {
+        const option = document.createElement('option');
+        option.value = device.deviceId;
+        option.text = `Camera ${index + 1} (${device.label || 'No label'})`;
+        cameraSelect.appendChild(option);
       });
+      switchCamera(videoDevices[0].deviceId); // Default to first camera
+    } else {
+      loading.innerText = "No cameras found.";
+    }
+  }
+
+  // Switch to selected camera
+  async function switchCamera(cameraId) {
+    if (currentStream) {
+      currentStream.getTracks().forEach(track => track.stop());
+    }
+
+    const constraints = {
+      video: {
+        deviceId: cameraId ? { exact: cameraId } : undefined,
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      }
+    };
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      video.srcObject = stream;
+      currentStream = stream;
+      video.play();
+      requestAnimationFrame(processFrame);
+    } catch (err) {
+      console.error("Error switching camera:", err);
+      alert("Could not access selected camera.");
+    }
   }
 
   function processFrame() {
@@ -128,11 +175,9 @@
       return;
     }
 
-    // Resize canvas to match video size
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
 
-    // Draw current video frame to canvas
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     try {
@@ -140,60 +185,40 @@
       let gray = new cv.Mat();
       let edges = new cv.Mat();
 
-      // Convert to grayscale
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-
-      // Edge detection
       cv.Canny(gray, edges, 50, 150);
 
-      // Find contours
       let contours = new cv.MatVector();
       let hierarchy = new cv.Mat();
       cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-      // Clear canvas and redraw original image
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      // Center of screen
       const centerX = canvas.width / 2;
       const centerY = canvas.height / 2;
 
-      // Loop through contours
       for (let i = 0; i < contours.size(); ++i) {
         let cnt = contours.get(i);
-        if (cv.contourArea(cnt) > 10000) { // Filter large areas
-
-          // Get bounding box
+        if (cv.contourArea(cnt) > 10000) {
           let rect = cv.boundingRect(cnt);
 
-          // Check if center point is inside the contour's rectangle
           if (
             centerX >= rect.x &&
             centerX <= rect.x + rect.width &&
             centerY >= rect.y &&
             centerY <= rect.y + rect.height
           ) {
-
-            // Normalize screen coordinates to -1 to 1 range
             let xNorm = (centerX / canvas.width) * 2 - 1;
             let yNorm = (centerY / canvas.height) * 2 - 1;
-
-            // Estimate depth based on Y position
             let zDepth = -1 - (yNorm * 0.5);
 
-            // Place cube once
             if (!isPlaced) {
-              cube.setAttribute('position', {
-                x: xNorm,
-                y: 0,
-                z: zDepth
-              });
+              cube.setAttribute('position', { x: xNorm, y: 0, z: zDepth });
               cube.setAttribute('visible', true);
               isPlaced = true;
             }
 
-            // Highlight contour with green stroke
             ctx.strokeStyle = "lime";
             ctx.lineWidth = 3;
             ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
@@ -201,7 +226,6 @@
         }
       }
 
-      // Cleanup
       src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
     } catch (err) {
       console.error("OpenCV Error:", err);
