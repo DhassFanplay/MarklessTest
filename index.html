@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Cube Placement - Step by Step</title>
+  <title>AR Step-by-Step: Select Camera → Start → Place Cube</title>
 
   <!-- Load A-Frame -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
@@ -31,9 +31,9 @@
 
     .overlay {
       position: absolute;
-      top: 50%;
+      top: 20px;
       left: 50%;
-      transform: translate(-50%, -50%);
+      transform: translateX(-50%);
       text-align: center;
       z-index: 100;
     }
@@ -137,14 +137,22 @@
       const videoDevices = devices.filter(device => device.kind === 'videoinput');
 
       if (videoDevices.length > 0) {
+        cameraSelect.innerHTML = '<option value="">Select Camera</option>';
+
         videoDevices.forEach((device, index) => {
           const option = document.createElement('option');
-          option.value = device.deviceId;
+          option.value = device.deviceId || '';
           option.text = `Camera ${index + 1} (${device.label || 'No label'})`;
           cameraSelect.appendChild(option);
         });
 
         cameraSelect.style.display = 'block';
+        cameraSelect.addEventListener('change', () => {
+          if (cameraSelect.value) {
+            startButton.style.display = 'block';
+            placeCubeButton.style.display = 'none';
+          }
+        });
       } else {
         alert("No cameras found.");
       }
@@ -165,17 +173,18 @@
       video: {}
     };
 
+    // Try using deviceId if available
     if (cameraId && cameraId.trim() !== "") {
       constraints.video.deviceId = { exact: cameraId };
     }
 
+    // Fallback-friendly resolution
     constraints.video.width = { ideal: 1280 };
     constraints.video.height = { ideal: 720 };
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       video.srcObject = stream;
-      currentStream = stream;
 
       video.onloadedmetadata = () => {
         video.play().catch(err => {
@@ -190,7 +199,25 @@
       requestAnimationFrame(processFrame);
     } catch (err) {
       console.error("Error starting camera:", err);
-      alert("Could not start selected camera.");
+      alert("Could not start selected camera. Trying default...");
+      try {
+        const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        video.srcObject = fallbackStream;
+
+        video.onloadedmetadata = () => {
+          video.play().catch(err => {
+            console.error("Fallback video play error:", err);
+          });
+        };
+
+        startButton.style.display = 'none';
+        placeCubeButton.style.display = 'block';
+
+        requestAnimationFrame(processFrame);
+      } catch (fallbackErr) {
+        alert("Could not access any camera.");
+        console.error("Fallback camera error:", fallbackErr);
+      }
     }
   }
 
@@ -198,7 +225,7 @@
   startButton.addEventListener('click', () => {
     const selectedCamera = cameraSelect.value;
     if (!selectedCamera) {
-      alert("Please select a camera first.");
+      alert("Please select a valid camera.");
       return;
     }
     switchCamera(selectedCamera);
