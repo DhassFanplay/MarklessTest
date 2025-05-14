@@ -2,11 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Floor Detection - Point Cloud</title>
+  <title>AR Floor Detection - Debug Overlay</title>
 
-  <!-- A-Frame + OpenCV -->
-  <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
-  <script async src="https://docs.opencv.org/4.5.0/opencv.js"></script>
+  <!-- Load A-Frame -->
+  <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
+
+  <!-- Load OpenCV.js -->
+  <script async src="https://docs.opencv.org/4.5.0/opencv.js "></script>
 
   <style>
     html, body {
@@ -16,6 +18,7 @@
       background: black;
       font-family: sans-serif;
     }
+
     #video, #canvas {
       position: absolute;
       top: 0;
@@ -25,6 +28,7 @@
       object-fit: cover;
       z-index: 0;
     }
+
     .overlay {
       position: absolute;
       top: 20px;
@@ -33,7 +37,8 @@
       text-align: center;
       z-index: 100;
     }
-    #cameraSelect, #startButton {
+
+    .overlay button {
       display: block;
       margin: 10px auto;
       padding: 15px 30px;
@@ -44,6 +49,11 @@
       background-color: rgba(0, 0, 0, 0.7);
       cursor: pointer;
     }
+
+    #rescanButton, #placeCubeButton {
+      display: none;
+    }
+
     a-scene {
       position: absolute;
       top: 0;
@@ -53,37 +63,85 @@
       pointer-events: none;
       z-index: 20;
     }
+
+    #reticle {
+      position: absolute;
+      width: 30px;
+      height: 30px;
+      border: 2px solid red;
+      border-radius: 50%;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 30;
+      pointer-events: none;
+    }
+
+    #statusText {
+      position: absolute;
+      bottom: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: lime;
+      font-size: 16px;
+      z-index: 100;
+      display: none;
+    }
   </style>
 </head>
 
 <body>
 
-<!-- UI -->
-<div class="overlay">
-  <select id="cameraSelect"><option value="">Select Camera</option></select>
-  <button id="startButton" style="display: none;">Start Camera</button>
+<!-- Overlay UI -->
+<div class="overlay" id="uiOverlay">
+  <select id="cameraSelect">
+    <option value="">Select Camera</option>
+  </select>
+  <button id="startButton">Start Camera</button>
+  <button id="rescanButton">Rescan Floor</button>
+  <button id="placeCubeButton">Place Cube</button>
 </div>
+
+<div id="statusText">Looking for floor...</div>
 
 <video id="video" autoplay playsinline></video>
 <canvas id="canvas"></canvas>
+<div id="reticle"></div>
 
 <!-- A-Frame Scene -->
 <a-scene embedded>
+  <!-- Lighting -->
   <a-entity light="type: ambient; intensity: 0.5;"></a-entity>
-  <a-entity light="type: directional; intensity: 0.7;" position="1 2 1"></a-entity>
+  <a-entity light="type: directional; color: #fff; intensity: 0.7;" position="-1 1 0"></a-entity>
+
+  <!-- Cube (hidden initially) -->
+  <a-box id="placedCube"
+         color="red"
+         depth="0.5"
+         height="0.5"
+         width="0.5"
+         visible="false"
+         position="0 0 0">
+  </a-box>
+
+  <!-- Camera -->
   <a-entity camera look-controls></a-entity>
 </a-scene>
 
 <script>
   const cameraSelect = document.getElementById('cameraSelect');
   const startButton = document.getElementById('startButton');
+  const rescanButton = document.getElementById('rescanButton');
+  const placeCubeButton = document.getElementById('placeCubeButton');
   const video = document.getElementById('video');
   const canvas = document.getElementById('canvas');
   const ctx = canvas.getContext('2d');
-  const scene = document.querySelector('a-scene');
+  const cube = document.getElementById('placedCube');
+  const statusText = document.getElementById('statusText');
 
-  let placed = false;
+  let isPlaced = false;
 
+  // Wait for OpenCV to load
   const checkCv = setInterval(() => {
     if (typeof cv !== 'undefined') {
       clearInterval(checkCv);
@@ -91,53 +149,169 @@
     }
   }, 100);
 
+  // Get list of available cameras
   async function getCameras() {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoDevices = devices.filter(d => d.kind === 'videoinput');
-      cameraSelect.innerHTML = '<option value="">Select Camera</option>';
-      videoDevices.forEach((device, i) => {
-        const option = document.createElement('option');
-        option.value = device.deviceId;
-        option.text = `Camera ${i + 1} (${device.label || 'No label'})`;
-        cameraSelect.appendChild(option);
-      });
-      cameraSelect.onchange = () => {
-        startButton.style.display = cameraSelect.value ? 'block' : 'none';
-      };
+      const videoDevices = devices.filter(device => device.kind === 'videoinput');
+
+      if (videoDevices.length > 0) {
+        cameraSelect.innerHTML = '<option value="">Select Camera</option>';
+
+        videoDevices.forEach((device, index) => {
+          const option = document.createElement('option');
+          option.value = device.deviceId || '';
+          option.text = `Camera ${index + 1} (${device.label || 'No label'})`;
+          cameraSelect.appendChild(option);
+        });
+
+        cameraSelect.style.display = 'block';
+        cameraSelect.addEventListener('change', () => {
+          if (cameraSelect.value) {
+            startButton.style.display = 'block';
+          }
+        });
+      } else {
+        alert("No cameras found.");
+      }
     } catch (err) {
-      alert("Failed to list cameras");
-      console.error(err);
+      console.error("Error enumerating devices:", err);
+      alert("Could not retrieve camera list.");
     }
   }
 
+  // Switch to selected camera
+  async function switchCamera(cameraId) {
+    const constraints = {
+      video: {}
+    };
+
+    if (cameraId && cameraId.trim() !== "") {
+      constraints.video.deviceId = { exact: cameraId };
+    }
+
+    constraints.video.width = { ideal: 640 };
+    constraints.video.height = { ideal: 480 };
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      video.srcObject = stream;
+
+      video.onloadedmetadata = () => {
+        video.play().catch(err => {
+          console.error("Video play error:", err);
+          alert("Could not start video playback.");
+        });
+      };
+
+      startButton.style.display = 'none';
+      rescanButton.style.display = 'block';
+      placeCubeButton.style.display = 'block';
+
+      requestAnimationFrame(processFrame);
+    } catch (err) {
+      console.error("Error starting camera:", err);
+      alert("Could not start selected camera. Trying default...");
+      try {
+        const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        video.srcObject = fallbackStream;
+
+        video.onloadedmetadata = () => {
+          video.play().catch(err => {
+            console.error("Fallback video play error:", err);
+          });
+        };
+
+        startButton.style.display = 'none';
+        rescanButton.style.display = 'block';
+        placeCubeButton.style.display = 'block';
+
+        requestAnimationFrame(processFrame);
+      } catch (fallbackErr) {
+        alert("Could not access any camera.");
+        console.error("Fallback camera error:", fallbackErr);
+      }
+    }
+  }
+
+  // Start camera on click
   startButton.addEventListener('click', () => {
-    switchCamera(cameraSelect.value);
+    const selectedCamera = cameraSelect.value;
+    if (!selectedCamera) {
+      alert("Please select a valid camera.");
+      return;
+    }
+    switchCamera(selectedCamera);
   });
 
-  async function switchCamera(cameraId) {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { deviceId: { exact: cameraId }, width: { ideal: 640 }, height: { ideal: 480 } }
-      });
-      video.srcObject = stream;
-      video.onloadedmetadata = () => {
-        video.play();
-        requestAnimationFrame(processFrame);
-      };
-    } catch (err) {
-      alert("Camera access failed.");
-      console.error(err);
-    }
-  }
+  // Reset cube placement and restart detection
+  rescanButton.addEventListener('click', () => {
+    cube.setAttribute('visible', false);
+    isPlaced = false;
+    statusText.textContent = "Looking for floor...";
+    statusText.style.display = 'block';
+  });
 
-  function addPointToScene(xNorm, yNorm) {
-    const z = -1.5; // fixed depth
-    const point = document.createElement('a-sphere');
-    point.setAttribute('radius', '0.03');
-    point.setAttribute('color', '#00ffcc');
-    point.setAttribute('position', `${xNorm} 0 ${z + yNorm}`); // floor plane approximation
-    scene.appendChild(point);
+  // Place cube at current center if surface detected
+  placeCubeButton.addEventListener('click', () => {
+    if (!isPlaced) {
+      detectAndPlaceCube();
+    }
+  });
+
+  function detectAndPlaceCube() {
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+
+    let src = cv.imread(canvas);
+    let gray = new cv.Mat();
+    let edges = new cv.Mat();
+
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.Canny(gray, edges, 50, 150);
+
+    let contours = new cv.MatVector();
+    let hierarchy = new cv.Mat();
+    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+    let surfaceDetected = false;
+
+    for (let i = 0; i < contours.size(); ++i) {
+      let cnt = contours.get(i);
+      if (cv.contourArea(cnt) > 10000) {
+        let rect = cv.boundingRect(cnt);
+
+        if (
+          centerX >= rect.x &&
+          centerX <= rect.x + rect.width &&
+          centerY >= rect.y &&
+          centerY <= rect.y + rect.height
+        ) {
+          // Place cube
+          let xNorm = (centerX / canvas.width) * 2 - 1;
+          let yNorm = (centerY / canvas.height) * 2 - 1;
+          let zDepth = -1 - (yNorm * 0.5);
+
+          cube.setAttribute('position', { x: xNorm, y: 0, z: zDepth });
+          cube.setAttribute('visible', true);
+          isPlaced = true;
+          statusText.textContent = "Cube placed.";
+          statusText.style.display = 'block';
+          surfaceDetected = true;
+          break;
+        }
+      }
+    }
+
+    // Cleanup
+    src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+
+    if (!surfaceDetected) {
+      statusText.textContent = "No surface under center. Try again.";
+      setTimeout(() => {
+        statusText.style.display = 'none';
+      }, 2000);
+    }
   }
 
   function processFrame() {
@@ -148,44 +322,59 @@
 
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
+
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    try {
-      const src = cv.imread(canvas);
-      const gray = new cv.Mat();
-      const edges = new cv.Mat();
-      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-      cv.Canny(gray, edges, 50, 150);
+    if (!isPlaced) {
+      try {
+        let src = cv.imread(canvas);
+        let gray = new cv.Mat();
+        let edges = new cv.Mat();
 
-      const contours = new cv.MatVector();
-      const hierarchy = new cv.Mat();
-      cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+        cv.Canny(gray, edges, 50, 150);
 
-      const gridSize = 8;
+        let contours = new cv.MatVector();
+        let hierarchy = new cv.Mat();
+        cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-      for (let i = 0; i < contours.size(); ++i) {
-        const cnt = contours.get(i);
-        if (cv.contourArea(cnt) > 8000 && !placed) {
-          const rect = cv.boundingRect(cnt);
-          for (let gx = 1; gx < gridSize; gx++) {
-            for (let gy = 1; gy < gridSize; gy++) {
-              const px = rect.x + (gx * rect.width / gridSize);
-              const py = rect.y + (gy * rect.height / gridSize);
-              const inside = cv.pointPolygonTest(cnt, new cv.Point(px, py), false);
-              if (inside >= 0) {
-                const xNorm = (px / canvas.width) * 2 - 1;
-                const yNorm = (py / canvas.height) * 2 - 1;
-                addPointToScene(xNorm, yNorm);
-              }
+        const centerX = canvas.width / 2;
+        const centerY = canvas.height / 2;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        let surfaceUnderCenter = false;
+
+        for (let i = 0; i < contours.size(); ++i) {
+          let cnt = contours.get(i);
+          if (cv.contourArea(cnt) > 10000) {
+            let rect = cv.boundingRect(cnt);
+            ctx.strokeStyle = "lime";
+            ctx.lineWidth = 3;
+            ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+
+            // Check if center point is over this contour
+            if (
+              centerX >= rect.x &&
+              centerX <= rect.x + rect.width &&
+              centerY >= rect.y &&
+              centerY <= rect.y + rect.height
+            ) {
+              surfaceUnderCenter = true;
             }
           }
-          placed = true;
         }
-      }
 
-      src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
-    } catch (err) {
-      console.error("OpenCV error:", err);
+        // Update reticle color
+        const reticle = document.getElementById('reticle');
+        reticle.style.borderColor = surfaceUnderCenter ? "lime" : "red";
+
+        // Cleanup
+        src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+      } catch (err) {
+        console.error("OpenCV Error:", err);
+      }
     }
 
     requestAnimationFrame(processFrame);
