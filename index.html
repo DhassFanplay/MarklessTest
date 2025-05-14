@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Cube - In Front of Camera, On Floor</title>
+  <title>AR Floor Detection - Live Video + Cube</title>
 
   <!-- Load A-Frame -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
@@ -19,7 +19,7 @@
       font-family: sans-serif;
     }
 
-    #video, #canvas {
+    #video {
       position: absolute;
       top: 0;
       left: 0;
@@ -27,7 +27,7 @@
       height: 100%;
       object-fit: cover;
       z-index: 0;
-      display: none; /* Hide until user clicks Start */
+      display: none;
     }
 
     .overlay {
@@ -55,14 +55,24 @@
       display: none;
     }
 
+    #canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 10;
+      display: none;
+    }
+
     a-scene {
       position: absolute;
       top: 0;
       left: 0;
       width: 100%;
       height: 100%;
-      pointer-events: none;
       z-index: 20;
+      pointer-events: none;
     }
 
     #reticle {
@@ -126,7 +136,7 @@
   </a-box>
 
   <!-- Camera -->
-  <a-entity id="camera" camera look-controls wasd-controls position="0 1.6 0"></a-entity>
+  <a-entity id="camera" camera look-controls wasd-controls></a-entity>
 </a-scene>
 
 <script>
@@ -149,7 +159,6 @@
     navigator.mediaDevices.enumerateDevices()
       .then(devices => {
         const videoDevices = devices.filter(device => device.kind === 'videoinput');
-
         const select = document.getElementById('cameraSelect');
         select.innerHTML = '<option value="">Select Camera</option>';
 
@@ -185,15 +194,20 @@
       constraints.video.deviceId = { exact: selectedCamera };
     }
 
+    constraints.video.width = { ideal: 640 };
+    constraints.video.height = { ideal: 480 };
+
     navigator.mediaDevices.getUserMedia(constraints)
       .then(stream => {
         video.srcObject = stream;
         video.onloadedmetadata = () => {
-          video.play();
+          video.play().catch(err => {
+            alert("Could not play video.");
+            console.error("Video play error:", err);
+          });
         };
-        video.style.display = 'block'; // ✅ Show video
-        canvas.style.display = 'block';
 
+        video.style.display = 'block'; // ✅ Show video
         document.getElementById('startButton').style.display = 'none';
         document.getElementById('rescanButton').style.display = 'block';
         document.getElementById('placeCubeButton').style.display = 'block';
@@ -205,8 +219,12 @@
         try {
           const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true });
           video.srcObject = fallbackStream;
-          video.onloadedmetadata = () => video.play();
-
+          video.onloadedmetadata = () => {
+            video.play().catch(err => {
+              console.error("Fallback video play error:", err);
+            });
+          };
+          video.style.display = 'block';
           document.getElementById('startButton').style.display = 'none';
           document.getElementById('rescanButton').style.display = 'block';
           document.getElementById('placeCubeButton').style.display = 'block';
@@ -216,9 +234,9 @@
           console.error("Fallback camera error:", fallbackErr);
         }
       });
-  }
+  });
 
-  // Reset cube placement and restart detection
+  // Reset placement
   document.getElementById('rescanButton').addEventListener('click', () => {
     cube.setAttribute('visible', false);
     isPlaced = false;
@@ -227,11 +245,9 @@
     setTimeout(() => statusText.style.display = 'none', 2000);
   });
 
-  // Place cube once when clicked
+  // Place cube based on floor detection
   document.getElementById('placeCubeButton').addEventListener('click', () => {
-    if (!isPlaced) {
-      detectAndPlaceCube();
-    }
+    detectAndPlaceCube();
   });
 
   function processFrame() {
@@ -242,6 +258,7 @@
 
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
+
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     if (!isPlaced) {
@@ -261,7 +278,7 @@
         cv.dilate(edges, edges, kernel, new cv.Point(-1, -1), 5);
         cv.erode(edges, edges, kernel, new cv.Point(-1, -1), 3);
 
-        // Hough Lines Detection
+        // Hough Line Detection
         let lines = new cv.Mat();
         cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 20, 20, 10);
 
@@ -276,7 +293,7 @@
 
           let dx = x2 - x1;
           let dy = y2 - y1;
-          let length = Math.hypot(dx, dy);
+          let length = Math.sqrt(dx * dx + dy * dy);
           if (length < 20) continue;
 
           let slope = (dy / (dx || 0.0001)).toFixed(2);
@@ -289,7 +306,6 @@
           }
         }
 
-        // Find best lines
         let bestLeft = getBestLine(leftLines);
         let bestRight = getBestLine(rightLines);
 
@@ -302,23 +318,28 @@
         if (bestLeft && bestRight) {
           let x_bottom_left = Math.min(bestLeft.x1, bestLeft.x2);
           let y_bottom_left = Math.max(bestLeft.y1, bestLeft.y2);
+          let x_top_left = Math.max(bestLeft.x1, bestLeft.x2);
+          let y_top_left = Math.min(bestLeft.y1, bestLeft.y2);
+
           let x_bottom_right = Math.max(bestRight.x1, bestRight.x2);
           let y_bottom_right = Math.max(bestRight.y1, bestRight.y2);
+          let x_top_right = Math.min(bestRight.x1, bestRight.x2);
+          let y_top_right = Math.min(bestRight.y1, bestRight.y2);
 
           // Compute distance from screen center to both floor lines
           let distToLeftEdge = Math.abs(
-            (y_bottom_left - bestLeft.y2) * centerX -
-            (x_bottom_left - bestLeft.x2) * centerY +
-            x_bottom_left * bestLeft.y2 -
-            y_bottom_left * bestLeft.x2
-          ) / Math.hypot(y_bottom_left - bestLeft.y2, x_bottom_left - bestLeft.x2);
+            (y_bottom_left - y_top_left) * centerX -
+            (x_bottom_left - x_top_left) * centerY +
+            x_bottom_left * y_top_left -
+            y_bottom_left * x_top_left
+          ) / Math.hypot(y_bottom_left - y_top_left, x_bottom_left - x_top_left);
 
           let distToRightEdge = Math.abs(
-            (y_bottom_right - bestRight.y2) * centerX -
-            (x_bottom_right - bestRight.x2) * centerY +
-            x_bottom_right * bestRight.y2 -
-            y_bottom_right * bestRight.x2
-          ) / Math.hypot(y_bottom_right - bestRight.y2, x_bottom_right - bestRight.x2);
+            (y_bottom_right - y_top_right) * centerX -
+            (x_bottom_right - x_top_right) * centerY +
+            x_bottom_right * y_top_right -
+            y_bottom_right * x_top_right
+          ) / Math.hypot(y_bottom_right - y_top_right, x_bottom_right - x_top_right);
 
           surfaceUnderCenter = distToLeftEdge < 20 && distToRightEdge < 20;
         }
@@ -326,9 +347,6 @@
         // Update reticle color
         const reticle = document.getElementById('reticle');
         reticle.style.borderColor = surfaceUnderCenter ? "lime" : "red";
-
-        // Save globally
-        window.floorDetected = surfaceUnderCenter;
 
         // Cleanup
         src.delete(); gray.delete(); edges.delete(); lines.delete();
@@ -356,6 +374,7 @@
     cv.dilate(edges, edges, kernel, new cv.Point(-1, -1), 5);
     cv.erode(edges, edges, kernel, new cv.Point(-1, -1), 3);
 
+    // Find lines
     let lines = new cv.Mat();
     cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 20, 20, 10);
 
@@ -370,7 +389,7 @@
 
       let dx = x2 - x1;
       let dy = y2 - y1;
-      let length = Math.hypot(dx, dy);
+      let length = Math.sqrt(dx * dx + dy * dy);
       if (length < 20) continue;
 
       let slope = (dy / (dx || 0.0001)).toFixed(2);
@@ -383,33 +402,39 @@
       }
     }
 
+    // Find best lines
     let bestLeft = getBestLine(leftLines);
     let bestRight = getBestLine(rightLines);
 
     if (bestLeft && bestRight) {
-      let y_floor_base = (bestLeft.y2 + bestRight.y2) / 2;
+      let x_bottom_left = Math.min(bestLeft.x1, bestLeft.x2);
+      let y_bottom_left = Math.max(bestLeft.y1, bestLeft.y2);
+      let x_bottom_right = Math.max(bestRight.x1, bestRight.x2);
+      let y_bottom_right = Math.max(bestRight.y1, bestRight.y2);
+
+      // Average Y level of floor
+      let floorBaseY = (y_bottom_left + y_bottom_right) / 2;
 
       // Normalize to A-Frame coordinate system (-1 to 1)
-      let yNorm = (y_floor_base / canvas.height) * 2 - 1;
-      let zDepth = -1.5; // Fixed Z in front of camera
+      let yNorm = (floorBaseY / canvas.height) * 2 - 1;
+      let zDepth = -1 - (yNorm * 0.5); // Estimate Z from Y
 
       // Get camera forward direction
-      const cameraEl = document.getElementById('camera');
+      const cameraPos = cameraEl.object3D.position.clone();
       const cameraDir = new THREE.Vector3(0, 0, -1);
       cameraDir.applyQuaternion(cameraEl.object3D.quaternion);
-      const camPos = cameraEl.object3D.position.clone().add(cameraDir.multiplyScalar(1.5));
 
       // Set final cube position
       cube.setAttribute('position', {
-        x: camPos.x,
+        x: cameraDir.x * 2,
         y: -yNorm * 0.5,
-        z: camPos.z
+        z: cameraDir.z * 2
       });
 
       cube.setAttribute('visible', true);
       isPlaced = true;
     } else {
-      alert("No floor detected under center. Try again.");
+      alert("No floor under center. Point at flat surface.");
     }
 
     // Cleanup
