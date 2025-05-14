@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Floor Detection - Live Video + Cube</title>
+  <title>AR Floor Detection - Final</title>
 
   <!-- Load A-Frame -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
@@ -19,7 +19,7 @@
       font-family: sans-serif;
     }
 
-    #video {
+    #video, #canvas {
       position: absolute;
       top: 0;
       left: 0;
@@ -55,24 +55,14 @@
       display: none;
     }
 
-    #canvas {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      z-index: 10;
-      display: none;
-    }
-
     a-scene {
       position: absolute;
       top: 0;
       left: 0;
       width: 100%;
       height: 100%;
-      z-index: 20;
       pointer-events: none;
+      z-index: 20;
     }
 
     #reticle {
@@ -156,30 +146,39 @@
   }, 100);
 
   function getCameras() {
-    navigator.mediaDevices.enumerateDevices()
-      .then(devices => {
-        const videoDevices = devices.filter(device => device.kind === 'videoinput');
-        const select = document.getElementById('cameraSelect');
-        select.innerHTML = '<option value="">Select Camera</option>';
+    navigator.mediaDevices.getUserMedia({ video: true })
+      .then(stream => {
+        stream.getTracks().forEach(track => track.stop());
 
-        videoDevices.forEach((device, index) => {
-          const option = document.createElement('option');
-          option.value = device.deviceId || '';
-          option.text = `Camera ${index + 1} (${device.label || 'No label'})`;
-          select.appendChild(option);
-        });
+        navigator.mediaDevices.enumerateDevices()
+          .then(devices => {
+            const videoDevices = devices.filter(device => device.kind === 'videoinput');
+            const select = document.getElementById('cameraSelect');
+            select.innerHTML = '<option value="">Select Camera</option>';
 
-        select.style.display = 'block';
-        select.addEventListener('change', () => {
-          if (select.value) {
-            document.getElementById('startButton').style.display = 'block';
-          } else {
-            document.getElementById('startButton').style.display = 'none';
-          }
-        });
+            videoDevices.forEach((device, index) => {
+              const option = document.createElement('option');
+              option.value = device.deviceId || '';
+              option.text = `Camera ${index + 1} (${device.label || 'No label'})`;
+              select.appendChild(option);
+            });
+
+            select.style.display = 'block';
+            select.addEventListener('change', () => {
+              if (select.value) {
+                document.getElementById('startButton').style.display = 'block';
+              } else {
+                document.getElementById('startButton').style.display = 'none';
+              }
+            });
+          })
+          .catch(err => {
+            console.error("Device enumeration failed", err);
+          });
       })
       .catch(err => {
-        console.error("Device enumeration failed", err);
+        alert("Camera access failed. Try again.");
+        console.error("Camera error:", err);
       });
   }
 
@@ -190,7 +189,7 @@
       video: {}
     };
 
-    if (selectedCamera && selectedCamera.trim() !== "") {
+    if (selectedCamera && selectedCamera.trim() !== '') {
       constraints.video.deviceId = { exact: selectedCamera };
     }
 
@@ -200,14 +199,8 @@
     navigator.mediaDevices.getUserMedia(constraints)
       .then(stream => {
         video.srcObject = stream;
-        video.onloadedmetadata = () => {
-          video.play().catch(err => {
-            alert("Could not play video.");
-            console.error("Video play error:", err);
-          });
-        };
+        video.play();
 
-        video.style.display = 'block'; // ✅ Show video
         document.getElementById('startButton').style.display = 'none';
         document.getElementById('rescanButton').style.display = 'block';
         document.getElementById('placeCubeButton').style.display = 'block';
@@ -219,12 +212,7 @@
         try {
           const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true });
           video.srcObject = fallbackStream;
-          video.onloadedmetadata = () => {
-            video.play().catch(err => {
-              console.error("Fallback video play error:", err);
-            });
-          };
-          video.style.display = 'block';
+          video.play();
           document.getElementById('startButton').style.display = 'none';
           document.getElementById('rescanButton').style.display = 'block';
           document.getElementById('placeCubeButton').style.display = 'block';
@@ -247,7 +235,9 @@
 
   // Place cube based on floor detection
   document.getElementById('placeCubeButton').addEventListener('click', () => {
-    detectAndPlaceCube();
+    if (!isPlaced) {
+      detectAndPlaceCube();
+    }
   });
 
   function processFrame() {
@@ -258,7 +248,6 @@
 
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     if (!isPlaced) {
@@ -297,15 +286,18 @@
           if (length < 20) continue;
 
           let slope = (dy / (dx || 0.0001)).toFixed(2);
-          if (Math.abs(slope) < 0.1 || Math.abs(parseFloat(slope)) > 10) continue;
+          slope = parseFloat(slope);
 
-          if (parseFloat(slope) > 0) {
+          if (Math.abs(slope) < 0.1 || Math.abs(slope) > 10) continue;
+
+          if (slope > 0) {
             leftLines.push({ x1, y1, x2, y2 });
           } else {
             rightLines.push({ x1, y1, x2, y2 });
           }
         }
 
+        // Find best floor lines
         let bestLeft = getBestLine(leftLines);
         let bestRight = getBestLine(rightLines);
 
@@ -348,6 +340,9 @@
         const reticle = document.getElementById('reticle');
         reticle.style.borderColor = surfaceUnderCenter ? "lime" : "red";
 
+        // Save globally
+        window.floorDetected = surfaceUnderCenter;
+
         // Cleanup
         src.delete(); gray.delete(); edges.delete(); lines.delete();
       } catch (err) {
@@ -374,7 +369,7 @@
     cv.dilate(edges, edges, kernel, new cv.Point(-1, -1), 5);
     cv.erode(edges, edges, kernel, new cv.Point(-1, -1), 3);
 
-    // Find lines
+    // Hough Line Detection
     let lines = new cv.Mat();
     cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 20, 20, 10);
 
@@ -412,10 +407,11 @@
       let x_bottom_right = Math.max(bestRight.x1, bestRight.x2);
       let y_bottom_right = Math.max(bestRight.y1, bestRight.y2);
 
-      // Average Y level of floor
+      // Average floor Y
       let floorBaseY = (y_bottom_left + y_bottom_right) / 2;
 
-      // Normalize to A-Frame coordinate system (-1 to 1)
+      // Normalize screen center point to A-Frame (-1 to 1)
+      let xNorm = (centerX / canvas.width) * 2 - 1;
       let yNorm = (floorBaseY / canvas.height) * 2 - 1;
       let zDepth = -1 - (yNorm * 0.5); // Estimate Z from Y
 
@@ -424,17 +420,17 @@
       const cameraDir = new THREE.Vector3(0, 0, -1);
       cameraDir.applyQuaternion(cameraEl.object3D.quaternion);
 
-      // Set final cube position
+      // Set cube position
       cube.setAttribute('position', {
         x: cameraDir.x * 2,
-        y: -yNorm * 0.5,
+        y: yNorm,
         z: cameraDir.z * 2
       });
 
       cube.setAttribute('visible', true);
       isPlaced = true;
     } else {
-      alert("No floor under center. Point at flat surface.");
+      alert("No flat floor detected. Try pointing at ground.");
     }
 
     // Cleanup
