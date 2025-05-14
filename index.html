@@ -2,9 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Floor Detection with 3D Points</title>
+  <title>AR Floor Detection - Point Cloud</title>
 
-  <!-- A-Frame and OpenCV.js -->
+  <!-- A-Frame + OpenCV -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
   <script async src="https://docs.opencv.org/4.5.0/opencv.js"></script>
 
@@ -53,38 +53,24 @@
       pointer-events: none;
       z-index: 20;
     }
-    #reticle {
-      position: absolute;
-      width: 30px;
-      height: 30px;
-      border: 2px solid lime;
-      border-radius: 50%;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      z-index: 30;
-      pointer-events: none;
-    }
   </style>
 </head>
+
 <body>
 
 <!-- UI -->
-<div class="overlay" id="uiOverlay">
-  <select id="cameraSelect">
-    <option value="">Select Camera</option>
-  </select>
+<div class="overlay">
+  <select id="cameraSelect"><option value="">Select Camera</option></select>
   <button id="startButton" style="display: none;">Start Camera</button>
 </div>
 
 <video id="video" autoplay playsinline></video>
 <canvas id="canvas"></canvas>
-<div id="reticle"></div>
 
 <!-- A-Frame Scene -->
 <a-scene embedded>
   <a-entity light="type: ambient; intensity: 0.5;"></a-entity>
-  <a-entity light="type: directional; color: #fff; intensity: 0.7;" position="-1 1 0"></a-entity>
+  <a-entity light="type: directional; intensity: 0.7;" position="1 2 1"></a-entity>
   <a-entity camera look-controls></a-entity>
 </a-scene>
 
@@ -96,9 +82,8 @@
   const ctx = canvas.getContext('2d');
   const scene = document.querySelector('a-scene');
 
-  let isPlaced = false;
+  let placed = false;
 
-  // Wait for OpenCV
   const checkCv = setInterval(() => {
     if (typeof cv !== 'undefined') {
       clearInterval(checkCv);
@@ -109,72 +94,50 @@
   async function getCameras() {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoDevices = devices.filter(device => device.kind === 'videoinput');
-
-      if (videoDevices.length > 0) {
-        cameraSelect.innerHTML = '<option value="">Select Camera</option>';
-        videoDevices.forEach((device, index) => {
-          const option = document.createElement('option');
-          option.value = device.deviceId || '';
-          option.text = `Camera ${index + 1} (${device.label || 'No label'})`;
-          cameraSelect.appendChild(option);
-        });
-
-        cameraSelect.style.display = 'block';
-        cameraSelect.addEventListener('change', () => {
-          if (cameraSelect.value) startButton.style.display = 'block';
-        });
-      } else {
-        alert("No cameras found.");
-      }
+      const videoDevices = devices.filter(d => d.kind === 'videoinput');
+      cameraSelect.innerHTML = '<option value="">Select Camera</option>';
+      videoDevices.forEach((device, i) => {
+        const option = document.createElement('option');
+        option.value = device.deviceId;
+        option.text = `Camera ${i + 1} (${device.label || 'No label'})`;
+        cameraSelect.appendChild(option);
+      });
+      cameraSelect.onchange = () => {
+        startButton.style.display = cameraSelect.value ? 'block' : 'none';
+      };
     } catch (err) {
-      console.error("Error enumerating devices:", err);
-      alert("Could not retrieve camera list.");
+      alert("Failed to list cameras");
+      console.error(err);
     }
   }
 
   startButton.addEventListener('click', () => {
-    const selectedCamera = cameraSelect.value;
-    if (!selectedCamera) {
-      alert("Please select a valid camera.");
-      return;
-    }
-    switchCamera(selectedCamera);
+    switchCamera(cameraSelect.value);
   });
 
   async function switchCamera(cameraId) {
-    const constraints = {
-      video: {
-        deviceId: cameraId ? { exact: cameraId } : undefined,
-        width: { ideal: 640 },
-        height: { ideal: 480 }
-      }
-    };
-
     try {
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: cameraId }, width: { ideal: 640 }, height: { ideal: 480 } }
+      });
       video.srcObject = stream;
-
       video.onloadedmetadata = () => {
-        video.play().catch(err => console.error("Video play error:", err));
+        video.play();
+        requestAnimationFrame(processFrame);
       };
-
-      startButton.style.display = 'none';
-      requestAnimationFrame(processFrame);
     } catch (err) {
-      console.error("Camera error:", err);
-      alert("Could not start camera.");
+      alert("Camera access failed.");
+      console.error(err);
     }
   }
 
-  function addMarkerInScene(xNorm, yNorm) {
-    let zDepth = -1 - (yNorm * 0.5); // estimate depth
-    const marker = document.createElement('a-sphere');
-    marker.setAttribute('radius', '0.05');
-    marker.setAttribute('color', 'yellow');
-    marker.setAttribute('position', { x: xNorm, y: 0, z: zDepth });
-    marker.setAttribute('visible', true);
-    scene.appendChild(marker);
+  function addPointToScene(xNorm, yNorm) {
+    const z = -1.5; // fixed depth
+    const point = document.createElement('a-sphere');
+    point.setAttribute('radius', '0.03');
+    point.setAttribute('color', '#00ffcc');
+    point.setAttribute('position', `${xNorm} 0 ${z + yNorm}`); // floor plane approximation
+    scene.appendChild(point);
   }
 
   function processFrame() {
@@ -188,52 +151,41 @@
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     try {
-      let src = cv.imread(canvas);
-      let gray = new cv.Mat();
-      let edges = new cv.Mat();
-
+      const src = cv.imread(canvas);
+      const gray = new cv.Mat();
+      const edges = new cv.Mat();
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
       cv.Canny(gray, edges, 50, 150);
 
-      let contours = new cv.MatVector();
-      let hierarchy = new cv.Mat();
+      const contours = new cv.MatVector();
+      const hierarchy = new cv.Mat();
       cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-      const gridSize = 5;
+      const gridSize = 8;
 
       for (let i = 0; i < contours.size(); ++i) {
-        let cnt = contours.get(i);
-        if (cv.contourArea(cnt) > 8000 && !isPlaced) {
-          let rect = cv.boundingRect(cnt);
-
-          ctx.strokeStyle = "lime";
-          ctx.lineWidth = 3;
-          ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
-
+        const cnt = contours.get(i);
+        if (cv.contourArea(cnt) > 8000 && !placed) {
+          const rect = cv.boundingRect(cnt);
           for (let gx = 1; gx < gridSize; gx++) {
             for (let gy = 1; gy < gridSize; gy++) {
               const px = rect.x + (gx * rect.width / gridSize);
               const py = rect.y + (gy * rect.height / gridSize);
-
-              const pointInside = cv.pointPolygonTest(cnt, new cv.Point(px, py), false);
-              if (pointInside >= 0) {
-                let xNorm = (px / canvas.width) * 2 - 1;
-                let yNorm = (py / canvas.height) * 2 - 1;
-                addMarkerInScene(xNorm, yNorm);
+              const inside = cv.pointPolygonTest(cnt, new cv.Point(px, py), false);
+              if (inside >= 0) {
+                const xNorm = (px / canvas.width) * 2 - 1;
+                const yNorm = (py / canvas.height) * 2 - 1;
+                addPointToScene(xNorm, yNorm);
               }
             }
           }
-
-          isPlaced = true;
+          placed = true;
         }
       }
 
       src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
     } catch (err) {
-      console.error("OpenCV Error:", err);
+      console.error("OpenCV error:", err);
     }
 
     requestAnimationFrame(processFrame);
