@@ -2,40 +2,68 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Hallway Floor Detection</title>
+  <title>Hallway Floor Detection - Live Webcam</title>
   <style>
-    body { font-family: sans-serif; text-align: center; }
-    canvas { margin: 10px; border: 1px solid #ccc; max-width: 90vw; }
-    input[type="file"] { margin: 20px; }
+    body { font-family: sans-serif; text-align: center; margin: 0; padding: 0; }
+    #video { display: none; width: 100vw; max-width: 100%; }
+    canvas {
+      display: block;
+      margin: auto;
+      border: 2px solid #333;
+      max-width: 95vw;
+    }
   </style>
 </head>
 <body>
-  <h2>Hallway Floor Detection in Browser</h2>
-  <input type="file" id="upload" accept="image/*" />
-  <br/>
-  <canvas id="canvasInput"></canvas><br/>
+  <h2>Live Hallway Floor Detection</h2>
+  <video id="video" autoplay playsinline></video>
   <canvas id="canvasOutput"></canvas>
 
   <!-- Load OpenCV.js -->
   <script async src="https://docs.opencv.org/4.5.0/opencv.js "></script>
 
   <script>
-    const upload = document.getElementById('upload');
-    const canvasInput = document.getElementById('canvasInput');
-    const canvasOutput = document.getElementById('canvasOutput');
-    const ctxOut = canvasOutput.getContext('2d');
+    const video = document.getElementById('video');
+    const canvasOut = document.getElementById('canvasOutput');
+    const ctxOut = canvasOut.getContext('2d');
 
-    function drawLine(img, x1, y1, x2, y2, color = [0, 255, 0, 255]) {
-      cv.line(img, new cv.Point(x1, y1), new cv.Point(x2, y2), color, 3);
-    }
+    let isProcessing = false;
 
-    function processImage(src) {
-      let gray = new cv.Mat();
+    // Access webcam
+    navigator.mediaDevices.getUserMedia({ video: true })
+      .then(stream => {
+        video.srcObject = stream;
+        video.play();
+        requestAnimationFrame(processFrame);
+      })
+      .catch(err => alert("Error accessing webcam: " + err));
+
+    function processFrame() {
+      if (!video.videoWidth || !video.videoHeight) {
+        requestAnimationFrame(processFrame);
+        return;
+      }
+
+      // Set canvas size
+      canvasOut.width = video.videoWidth;
+      canvasOut.height = video.videoHeight;
+
+      // Create offscreen canvas to capture current frame
+      let tempCanvas = document.createElement('canvas');
+      let tempCtx = tempCanvas.getContext('2d');
+      tempCanvas.width = video.videoWidth;
+      tempCanvas.height = video.videoHeight;
+      tempCtx.drawImage(video, 0, 0);
+
+      // Convert to OpenCV Mat
+      let src = cv.imread(tempCanvas);
+      let gray = new cv.Mat(), blurred = new cv.Mat(), edges = new cv.Mat();
+
+      // Grayscale
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
 
       // Blur
       let blurAmount = 3;
-      let blurred = new cv.Mat();
       if (blurAmount > 0) {
         let ksize = new cv.Size(2 * blurAmount + 1, 2 * blurAmount + 1);
         cv.GaussianBlur(gray, blurred, ksize, 0, 0, cv.BORDER_DEFAULT);
@@ -44,21 +72,16 @@
       }
 
       // Canny Edge Detection
-      let edges = new cv.Mat();
-      let lowThreshold = 50;
-      let highThreshold = 100;
-      let apertureSize = 3;
+      let lowThreshold = 50, highThreshold = 100, apertureSize = 3;
       cv.Canny(blurred, edges, lowThreshold, highThreshold, apertureSize, true);
 
-      // Dilate & Erode
+      // Morphological operations
       let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
       cv.dilate(edges, edges, kernel, new cv.Point(-1, -1), 5);
       cv.erode(edges, edges, kernel, new cv.Point(-1, -1), 3);
 
-      // Connected components
-      let output = new cv.Mat();
-      let stats = new cv.Mat();
-      let centroids = new cv.Mat();
+      // Connected components filtering
+      let output = new cv.Mat(), stats = new cv.Mat(), centroids = new cv.Mat();
       cv.connectedComponentsWithStats(edges, output, stats, centroids);
 
       let finalImg = cv.Mat.zeros(edges.rows, edges.cols, cv.CV_8U);
@@ -72,7 +95,7 @@
         }
       }
 
-      // Line Detection
+      // Hough Line Detection
       let lines = new cv.Mat();
       cv.HoughLinesP(finalImg, lines, 1, Math.PI / 500, 20, 20, 50);
 
@@ -80,11 +103,8 @@
       let srcRgb = new cv.Mat();
       cv.cvtColor(gray, srcRgb, cv.GRAY2RGBA);
 
-      let leftLines = [];
-      let rightLines = [];
-
-      let xDeviation = 20;
-      let yDeviation = 20;
+      let leftLines = [], rightLines = [];
+      let xDeviation = 20, yDeviation = 20;
 
       for (let i = 0; i < lines.rows; ++i) {
         let x1 = lines.data32F[i * 4];
@@ -92,122 +112,88 @@
         let x2 = lines.data32F[i * 4 + 2];
         let y2 = lines.data32F[i * 4 + 3];
 
-        let xMin = Math.min(x1, x2);
-        let xMax = Math.max(x1, x2);
-        let yMin = Math.min(y1, y2);
-        let yMax = Math.max(y1, y2);
-
-        let xLen = xMax - xMin;
-        let yLen = yMax - yMin;
+        let xMin = Math.min(x1, x2), xMax = Math.max(x1, x2);
+        let yMin = Math.min(y1, y2), yMax = Math.max(y1, y2);
+        let xLen = xMax - xMin, yLen = yMax - yMin;
 
         if (xLen <= xDeviation || yLen <= yDeviation) continue;
 
         let slope = (y1 - y2) / (x2 - x1);
         slope = parseFloat(slope.toFixed(2));
 
-        drawLine(srcRgb, x1, y1, x2, y2, [0, 255, 0, 255]);
+        cv.line(srcRgb, new cv.Point(x1, y1), new cv.Point(x2, y2), [0, 255, 0, 255], 2);
 
-        if (slope > 0) {
-          leftLines.push({ x1, y1, x2, y2, slope });
-        } else {
-          rightLines.push({ x1, y1, x2, y2, slope });
-        }
+        if (slope > 0) leftLines.push({ x1, y1, x2, y2, slope });
+        else rightLines.push({ x1, y1, x2, y2, slope });
       }
 
-      // Find top/bottom points for left/right edges
-      let leftEdge = null;
-      let rightEdge = null;
-
+      let leftEdge = null, rightEdge = null;
       if (leftLines.length > 0) {
         leftLines.sort((a, b) => a.x1 - b.x1);
         leftEdge = leftLines[leftLines.length - 1];
       }
-
       if (rightLines.length > 0) {
         rightLines.sort((a, b) => b.x1 - a.x1);
         rightEdge = rightLines[rightLines.length - 1];
       }
 
       if (!leftEdge || !rightEdge) {
-        alert("No valid floor edges detected.");
+        cv.imshow(canvasOut, srcRgb);
+        requestAnimationFrame(processFrame);
         return;
       }
 
-      let { x1: xBottomLeft, y1: yBottomLeft, x2: xTopLeft, y2: yTopLeft } = leftEdge;
-      let { x1: xBottomRight, y1: yBottomRight, x2: xTopRight, y2: yTopRight } = rightEdge;
+      let lb = leftEdge, rb = rightEdge;
 
-      drawLine(srcRgb, xBottomLeft, yBottomLeft, xTopLeft, yTopLeft, [255, 0, 0, 255]);
-      drawLine(srcRgb, xBottomRight, yBottomRight, xTopRight, yTopRight, [255, 0, 0, 255]);
+      // Draw floor boundary lines
+      cv.line(srcRgb, new cv.Point(lb.x1, lb.y1), new cv.Point(lb.x2, lb.y2), [255, 0, 0, 255], 3);
+      cv.line(srcRgb, new cv.Point(rb.x1, rb.y1), new cv.Point(rb.x2, rb.y2), [255, 0, 0, 255], 3);
 
-      // Calculate floor center line
-      let yBottomCenter, xBottomCenter, yTopCenter, xTopCenter;
-      let rows = srcRgb.rows;
-      let cols = srcRgb.cols;
+      // Calculate center line
+      let rows = srcRgb.rows, cols = srcRgb.cols;
       let frameCenter = cols / 2;
+      let yBottomCenter, xBottomCenter, yTopCenter, xTopCenter;
 
-      if (yBottomLeft > yBottomRight) {
-        yBottomCenter = yBottomLeft;
-        let slopeRight = (yBottomRight - yBottomLeft) / (xBottomRight - xBottomLeft);
-        let xBottomRightNew = xBottomRight + ((yBottomLeft - yBottomRight) / slopeRight);
-        xBottomCenter = (xBottomLeft + xBottomRightNew) / 2;
+      if (lb.y1 > rb.y1) {
+        yBottomCenter = lb.y1;
+        let slopeRight = (rb.y1 - lb.y1) / (rb.x1 - lb.x1);
+        let xRightNew = rb.x1 + ((lb.y1 - rb.y1) / slopeRight);
+        xBottomCenter = (lb.x1 + xRightNew) / 2;
       } else {
-        yBottomCenter = yBottomRight;
-        let slopeLeft = (yBottomLeft - yBottomRight) / (xBottomLeft - xBottomRight);
-        let xBottomLeftNew = xBottomLeft + ((yBottomRight - yBottomLeft) / slopeLeft);
-        xBottomCenter = (xBottomRight + xBottomLeftNew) / 2;
+        yBottomCenter = rb.y1;
+        let slopeLeft = (lb.y1 - rb.y1) / (lb.x1 - rb.x1);
+        let xLeftNew = lb.x1 + ((rb.y1 - lb.y1) / slopeLeft);
+        xBottomCenter = (rb.x1 + xLeftNew) / 2;
       }
 
-      if (yTopLeft > yTopRight) {
-        yTopCenter = yTopLeft;
-        let slopeRight = (yTopRight - yTopLeft) / (xTopRight - xTopLeft);
-        let xTopRightNew = xTopRight + ((yTopLeft - yTopRight) / slopeRight);
-        xTopCenter = (xTopLeft + xTopRightNew) / 2;
+      if (lb.y2 > rb.y2) {
+        yTopCenter = lb.y2;
+        let slopeRight = (rb.y2 - lb.y2) / (rb.x2 - lb.x2);
+        let xRightNew = rb.x2 + ((lb.y2 - rb.y2) / slopeRight);
+        xTopCenter = (lb.x2 + xRightNew) / 2;
       } else {
-        yTopCenter = yTopRight;
-        let slopeLeft = (yTopLeft - yTopRight) / (xTopLeft - xTopRight);
-        let xTopLeftNew = xTopLeft + ((yTopRight - yTopLeft) / slopeLeft);
-        xTopCenter = (xTopRight + xTopLeftNew) / 2;
+        yTopCenter = rb.y2;
+        let slopeLeft = (lb.y2 - rb.y2) / (lb.x2 - rb.x2);
+        let xLeftNew = lb.x2 + ((rb.y2 - lb.y2) / slopeLeft);
+        xTopCenter = (rb.x2 + xLeftNew) / 2;
       }
 
       let slopeFloorCenter = (yTopCenter - yBottomCenter) / (xBottomCenter - xTopCenter);
       let xTopNew = xTopCenter + (1 / slopeFloorCenter) * (yTopCenter - rows / 3);
       let xBottomNew = xTopCenter + (1 / slopeFloorCenter) * (yTopCenter - (rows - 1));
 
-      drawLine(srcRgb, xTopNew, rows / 3, xBottomNew, rows - 1, [255, 255, 0, 255]); // Floor center line
-      drawLine(srcRgb, frameCenter, rows / 3, frameCenter, rows - 1, [255, 0, 255, 255]); // Frame center line
+      cv.line(srcRgb, new cv.Point(xTopNew, rows / 3), new cv.Point(xBottomNew, rows - 1), [255, 255, 0, 255], 3); // Floor center
+      cv.line(srcRgb, new cv.Point(frameCenter, rows / 3), new cv.Point(frameCenter, rows - 1), [255, 0, 255, 255], 2); // Frame center
 
-      // Resize Output Canvas
-      canvasOutput.width = srcRgb.cols;
-      canvasOutput.height = srcRgb.rows;
-      cv.imshow(canvasOutput, srcRgb);
+      // Draw on canvas
+      cv.imshow(canvasOut, srcRgb);
 
       // Cleanup
-      gray.delete(); blurred.delete(); edges.delete(); output.delete();
-      stats.delete(); centroids.delete(); finalImg.delete(); lines.delete();
-      srcRgb.delete();
+      src.delete(); gray.delete(); blurred.delete(); edges.delete(); output.delete();
+      stats.delete(); centroids.delete(); finalImg.delete(); lines.delete(); srcRgb.delete();
+
+      requestAnimationFrame(processFrame);
     }
-
-    upload.addEventListener('change', function(e) {
-      let file = e.target.files[0];
-      if (!file) return;
-
-      let reader = new FileReader();
-      reader.onload = function(evt) {
-        let img = new Image();
-        img.onload = function() {
-          // Set canvas size
-          canvasInput.width = img.width;
-          canvasInput.height = img.height;
-          let ctx = canvasInput.getContext('2d');
-          ctx.drawImage(img, 0, 0);
-          let src = cv.imread(canvasInput); // Read from canvas
-          processImage(src);
-          src.delete();
-        };
-        img.src = evt.target.result;
-      };
-      reader.readAsDataURL(file);
-    });
   </script>
 </body>
 </html>
