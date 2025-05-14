@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Floor Detection - Replace Cube Anywhere</title>
+  <title>AR Floor Detection - Optimized</title>
 
   <!-- Load A-Frame -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js "></script>
@@ -117,7 +117,7 @@
   const ctx = canvas.getContext('2d');
   const cube = document.getElementById('placedCube');
 
-  let currentStream = null;
+  let isPlaced = false;
 
   // Wait for OpenCV to load
   const checkCv = setInterval(() => {
@@ -160,11 +160,6 @@
 
   // Switch to selected camera
   async function switchCamera(cameraId) {
-    if (currentStream) {
-      currentStream.getTracks().forEach(track => track.stop());
-      currentStream = null;
-    }
-
     const constraints = {
       video: {}
     };
@@ -173,8 +168,8 @@
       constraints.video.deviceId = { exact: cameraId };
     }
 
-    constraints.video.width = { ideal: 1280 };
-    constraints.video.height = { ideal: 720 };
+    constraints.video.width = { ideal: 640 };
+    constraints.video.height = { ideal: 480 };
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -223,25 +218,6 @@
     switchCamera(selectedCamera);
   });
 
-  // Handle tap/click to place cube
-  document.body.addEventListener('click', (e) => {
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    detectAndPlaceCube(x, y);
-  });
-
-  function detectAndPlaceCube(touchX, touchY) {
-    const xNorm = (touchX / canvas.width) * 2 - 1;
-    const yNorm = (touchY / canvas.height) * 2 - 1;
-    const zDepth = -1 - (yNorm * 0.5);
-
-    // Reuse cube placement
-    cube.setAttribute('position', { x: xNorm, y: 0, z: zDepth });
-    cube.setAttribute('visible', true);
-  }
-
   function processFrame() {
     if (video.videoWidth === 0 || video.videoHeight === 0) {
       requestAnimationFrame(processFrame);
@@ -262,75 +238,59 @@
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
 
       // Canny edge detection
-      cv.Canny(gray, edges, 50, 150, 3, true); // apertureSize=3, L2gradient=true
+      cv.Canny(gray, edges, 50, 150);
 
-      // Morphological operations
-      let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
-      cv.dilate(edges, edges, kernel, new cv.Point(-1, -1), 5);
-      cv.erode(edges, edges, kernel, new cv.Point(-1, -1), 3);
+      // Find contours
+      let contours = new cv.MatVector();
+      let hierarchy = new cv.Mat();
+      cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-      // Hough Line Detection
-      let lines = new cv.Mat();
-      cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 20, 20, 10);
-
-      let leftLines = [];
-      let rightLines = [];
-
-      for (let i = 0; i < lines.rows; ++i) {
-        let x1 = lines.data32S[i * 4];
-        let y1 = lines.data32S[i * 4 + 1];
-        let x2 = lines.data32S[i * 4 + 2];
-        let y2 = lines.data32S[i * 4 + 3];
-
-        let dx = x2 - x1;
-        let dy = y2 - y1;
-        let length = Math.sqrt(dx * dx + dy * dy);
-        if (length < 20) continue;
-
-        let slope = (y2 - y1) / (x2 - x1 || 0.0001);
-        slope = parseFloat(slope.toFixed(2));
-
-        if (Math.abs(slope) < 0.1 || Math.abs(slope) > 10) continue;
-
-        if (slope > 0) {
-          leftLines.push({ x1, y1, x2, y2 });
-        } else {
-          rightLines.push({ x1, y1, x2, y2 });
-        }
-      }
-
-      // Draw detected lines for debugging
-      ctx.strokeStyle = "red";
-      ctx.lineWidth = 2;
+      // Clear canvas and redraw original image
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      for (let line of leftLines) drawLine(ctx, line.x1, line.y1, line.x2, line.y2);
-      for (let line of rightLines) drawLine(ctx, line.x1, line.y1, line.x2, line.y2);
+      const centerX = canvas.width / 2;
+      const centerY = canvas.height / 2;
 
-      src.delete(); gray.delete(); edges.delete(); lines.delete();
+      // Loop through contours
+      for (let i = 0; i < contours.size(); ++i) {
+        let cnt = contours.get(i);
+        if (cv.contourArea(cnt) > 8000) { // Large enough to be floor-like
+          let rect = cv.boundingRect(cnt);
+
+          // Check if center point is inside the contour
+          if (
+            centerX >= rect.x &&
+            centerX <= rect.x + rect.width &&
+            centerY >= rect.y &&
+            centerY <= rect.y + rect.height
+          ) {
+            // Place cube once
+            if (!isPlaced) {
+              let xNorm = (centerX / canvas.width) * 2 - 1;
+              let yNorm = (centerY / canvas.height) * 2 - 1;
+              let zDepth = -1 - (yNorm * 0.5); // Estimate depth based on Y position
+
+              cube.setAttribute('position', { x: xNorm, y: 0, z: zDepth });
+              cube.setAttribute('visible', true);
+              isPlaced = true;
+            }
+
+            // Highlight detected surface
+            ctx.strokeStyle = "lime";
+            ctx.lineWidth = 3;
+            ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+          }
+        }
+      }
+
+      // Cleanup
+      src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
     } catch (err) {
       console.error("OpenCV Error:", err);
     }
 
     requestAnimationFrame(processFrame);
-  }
-
-  function drawLine(context, x1, y1, x2, y2) {
-    context.beginPath();
-    context.moveTo(x1, y1);
-    context.lineTo(x2, y2);
-    context.stroke();
-  }
-
-  // Utility: Find best line by length
-  function getBestLine(lines) {
-    if (lines.length === 0) return null;
-    return lines.reduce((best, curr) => {
-      let len1 = Math.hypot(best.x2 - best.x1, best.y2 - best.y1);
-      let len2 = Math.hypot(curr.x2 - curr.x1, curr.y2 - curr.y1);
-      return len1 > len2 ? best : curr;
-    });
   }
 </script>
 
